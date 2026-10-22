@@ -61,8 +61,8 @@ jobs:
         env:
           DOTENV: ${{ secrets.DOTENV }}
 
-      # --timeout=300: one lesson generation (up to two model calls) can take minutes; the
-      # default 60 s request timeout would cut it off. Cloud Run bills only while serving.
+      # --timeout=300: one lesson generation (up to two model calls) can take minutes, so the
+      # 300 s request timeout is pinned explicitly. Cloud Run bills only while serving.
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy "$SERVICE_NAME" \
@@ -70,5 +70,6 @@ jobs:
             --region "$REGION" \
             --allow-unauthenticated \
             --min-instances=0 --max-instances=2 --cpu=1 --cpu-throttling --memory=512Mi \
+            --timeout=300 \
             --env-vars-file=env.yaml \
             --quiet
