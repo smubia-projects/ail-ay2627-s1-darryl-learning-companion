@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { Pool, type PoolClient } from 'pg';
+import type { Pool, PoolClient } from 'pg';
+import { sharedPool } from './db.js';
 import { z } from 'zod';
 import { learningStatusSchema, type HomeData, type LearningStatus, type Profile } from '@learning-companion/shared';
 import { AiOperationError } from './ai.js';
@@ -29,6 +30,8 @@ export type TopicSuggestionService = {
   suggest: (profile: Profile, home: HomeData, parentKey: string, requestId: string, prompt?: string) => Promise<SavedTopicNode[]>;
   discover: (profile: Profile, nodeId: string) => Promise<string[]>;
   prepare: (profile: Profile, nodeId: string) => Promise<ImportResult & { urls: string[] }>;
+  /** True when the topic already has checked sources, so preparing it needs no web search. */
+  isPrepared?: (ownerId: string, nodeId: string) => Promise<boolean>;
   close: () => Promise<void>;
 };
 
@@ -150,7 +153,7 @@ export function createTopicSuggestionService(
   generate?: (prompt: string) => Promise<string>,
   search?: (title: string, objective: string, excluded: string[]) => Promise<string[]>,
 ): TopicSuggestionService {
-  const pool = databaseUrl ? new Pool({ connectionString: databaseUrl, ssl: { rejectUnauthorized: false }, max: 3 }) : null;
+  const pool = databaseUrl ? sharedPool(databaseUrl) : null;
   const call = generate ?? ((prompt: string) => chatJson({ prompt, model: openRouterModel(), maxTokens: 1000, timeoutMs: 30_000,
     schema: { name: 'topic_suggestions', schema: { type: 'object', properties: {
       topics: { type: 'array', items: { type: 'object',
@@ -173,6 +176,13 @@ export function createTopicSuggestionService(
     async list(ownerId) {
       if (!pool) throw new AiOperationError('CONFIGURATION', 'Topic storage is unavailable.');
       return savedNodes(pool, ownerId);
+    },
+    async isPrepared(ownerId, nodeId) {
+      if (!pool) return false;
+      const saved = await pool.query<{ chunk_count: number }>(`select count(c.id)::int as chunk_count
+        from app_private.discovered_source_snapshots s join app_private.discovered_source_chunks c on c.snapshot_id=s.id
+        where s.owner_id=$1 and s.node_id=$2`, [ownerId, nodeId]);
+      return (saved.rows[0]?.chunk_count ?? 0) >= 2;
     },
     async discover(profile, nodeId) {
       if (!pool) throw new AiOperationError('CONFIGURATION', 'Topic storage is unavailable.');
@@ -374,6 +384,6 @@ export function createTopicSuggestionService(
         throw error;
       }
     },
-    close: () => pool?.end() ?? Promise.resolve(),
+    close: async () => undefined, // shared pool is closed once at shutdown
   };
 }

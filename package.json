@@ -21,17 +21,7 @@
     "pretest": "npm run build -w @learning-companion/shared",
     "test": "npm run test --workspaces",
     "test:e2e": "playwright test",
-    "db:offline": "node scripts/db-offline.mjs",
-    "db:remote:dry-run": "node scripts/db-remote.mjs dry-run",
-    "db:remote:push": "node scripts/db-remote.mjs push",
-    "db:live": "node scripts/db-live.mjs",
-    "guest:browser:live": "node scripts/guest-browser-live.mjs",
-    "content:check": "node scripts/content-check.mjs",
-    "content:seed": "node scripts/content-seed.mjs",
-    "ai:smoke": "npm run build -w @learning-companion/server && node scripts/ai-smoke.mjs",
-    "generation:live": "npm run build -w @learning-companion/server && node scripts/generation-live.mjs",
-    "generation:storage:check": "npm run build -w @learning-companion/server && node scripts/generation-storage-check.mjs",
-    "lesson:enrich": "node scripts/lesson-enrich.mjs"
+    "content:check": "node scripts/content-check.mjs"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.3.16",
@@ -45,7 +35,6 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "pg": "^8.23.1",
-    "supabase": "^2.120.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.0",
     "vitest": "5.0.3"

@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { sharedPool } from './db.js';
 import type { SmokeOutput } from './ai.js';
 
 type PublicQuestion = Omit<SmokeOutput['questions'][number], 'correctOptionId' | 'feedbackCriteria'>;
@@ -41,7 +41,7 @@ export function safeSmokeRun(id: string, output: SmokeOutput, startedAt: Date | 
 
 export function createLocalRunsService(databaseUrl: string): LocalRunsService & { close(): Promise<void> } {
   // This reads private operation results only for the loopback development backend.
-  const pool = new Pool({ connectionString: databaseUrl, ssl: { rejectUnauthorized: false }, max: 2 });
+  const pool = sharedPool(databaseUrl);
   return {
     async list(): Promise<LocalSmokeRunSummary[]> {
       const saved = await pool.query<{ id: string; completed_at: Date }>(`
@@ -76,6 +76,6 @@ export function createLocalRunsService(databaseUrl: string): LocalRunsService & 
         where ch.id=any($1) order by s.canonical_url, ch.ordinal`, [citedIds]) : null;
       return safeSmokeRun(row.id, output, row.started_at, row.completed_at, sources?.rows ?? []);
     },
-    close: () => pool.end(),
+    close: async () => undefined, // shared pool is closed once at shutdown
   };
 }

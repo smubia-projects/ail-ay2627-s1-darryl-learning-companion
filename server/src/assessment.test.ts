@@ -16,13 +16,13 @@ describe('answer route', () => {
     await request(app).post(`/api/rounds/${roundId}/answers`).send(body).expect(401);
     const response = await request(app).post(`/api/rounds/${roundId}/answers`)
       .set('Authorization', 'Bearer student-token').send(body).expect(200);
-    expect(submit).toHaveBeenCalledWith('student-token', roundId, body);
+    expect(submit).toHaveBeenCalledWith('learner', roundId, body);
     expect(response.body.data.feedback).toBe('Correct.');
     await request(app).post(`/api/rounds/${roundId}/answers`)
       .set('Authorization', 'Bearer student-token').send({ ...body, answer: 'not valid!' }).expect(400);
     expect(submit).toHaveBeenCalledTimes(1);
     await request(app).post(`/api/rounds/${roundId}/hints`).set('Authorization', 'Bearer student-token')
       .send({ questionId: 'q-1', requestId: body.requestId }).expect(200);
-    expect(hint).toHaveBeenCalledWith('student-token', roundId, 'q-1', body.requestId);
+    expect(hint).toHaveBeenCalledWith('learner', roundId, 'q-1', body.requestId);
   });
 });

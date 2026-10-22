@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { Pool } from 'pg';
+import { sharedPool } from './db.js';
 import { z } from 'zod';
 import { assessmentRoundSchema, submitAnswerResponseSchema, diagramSchema, lessonSchema, lessonStepSchema, mcqSchema,
   type AssessmentRound, type Lesson, type Profile } from '@learning-companion/shared';
@@ -29,6 +29,8 @@ export type SavedSession = { id: string; conceptId: string; generationState: 're
   attempts: ReturnType<typeof submitAnswerResponseSchema.parse>[]; assistedQuestionIds: string[] };
 export type GenerateProvider = (prompt: string) => Promise<string>;
 export type GenerationService = {
+  /** Returns a lesson without calling the model (idempotent replay, saved topic lesson or shared cache), else null. */
+  reuse?(profile: Profile, conceptId: string, requestId: string): Promise<SavedSession | null>;
   start(profile: Profile, conceptId: string, requestId: string): Promise<SavedSession>;
   get(ownerId: string, sessionId: string): Promise<SavedSession | null>;
   setPosition(ownerId: string, sessionId: string, step: number): Promise<number | null>;
@@ -142,7 +144,7 @@ export async function generateValidated(input: GenerationInput, provider: Genera
 
 export function createGenerationService(databaseUrl = process.env.DATABASE_URL?.trim(), provider?: GenerateProvider): GenerationService {
   if (!databaseUrl) throw new AiOperationError('CONFIGURATION', 'Database is not configured.');
-  const pool = new Pool({ connectionString: databaseUrl, ssl: { rejectUnauthorized: false }, max: 3 });
+  const pool = sharedPool(databaseUrl);
   const kind = 'stage6_lesson';
   async function get(ownerId: string, sessionId: string): Promise<SavedSession | null> {
     if (!uuid.safeParse(ownerId).success || !uuid.safeParse(sessionId).success) return null;
@@ -214,6 +216,69 @@ export function createGenerationService(databaseUrl = process.env.DATABASE_URL?.
       interests: profile.interests, experienceLevel: profile.experienceLevel,
       diagnosticEvidence: evidence.rows[0]?.diagnostic_evidence ?? [] } };
   }
+  // Shared lesson cache: catalogue lessons are generated once and copied for later visitors
+  // (new session, round and per-visitor progress; same lesson, questions and private keys).
+  // Saves a ~1-4 minute, 9k-token model call per visitor; the trade-off is that a cached
+  // lesson is not re-personalised to each visitor's interests.
+  async function copySharedLesson(profile: Profile, conceptId: string, requestId: string): Promise<SavedSession | null> {
+    const copiedId = await transaction(pool, async db => {
+      const source = (await db.query<{ id: string; owner_id: string; lesson: Lesson; citation_snapshot: unknown;
+        content_version: string | null; source_mode: string }>(`select s.id,s.owner_id,s.lesson,s.citation_snapshot,s.content_version,s.source_mode
+        from public.lesson_sessions s join public.concepts c on c.id=s.concept_id and c.owner_id is null and c.supported
+        where s.concept_id=$1 and s.topic_node_id is null and s.generation_state='ready'
+          and s.lesson->>'runningExample' is not null
+        order by s.created_at desc limit 1`, [conceptId])).rows[0];
+      if (!source) return null;
+      const round = (await db.query<{ id: string; questions: unknown; source_mode: string; assessment_basis: string;
+        answer_keys: unknown; feedback_criteria: unknown }>(`select r.id,r.questions,r.source_mode,r.assessment_basis,
+        k.answer_keys,k.feedback_criteria from public.assessment_rounds r
+        join app_private.assessment_secrets k on k.round_id=r.id
+        where r.session_id=$1 and r.owner_id=$2 and r.kind='initial'`, [source.id, source.owner_id])).rows[0];
+      if (!round) return null;
+      const sessionId = randomUUID();
+      const roundId = randomUUID();
+      const op = await db.query<{ id: string }>(`insert into app_private.operation_requests
+        (owner_id,operation_kind,request_id,input_hash,state,result_id,usage_metadata)
+        values($1,$2,$3,$4,'completed',$5,'{"calls":0,"sharedCache":true}'::jsonb)
+        on conflict(owner_id,operation_kind,request_id) do nothing returning id`,
+      [profile.userId, kind, requestId, `shared-cache:${source.id}`, sessionId]);
+      if (!op.rowCount) return null;
+      await db.query(`insert into public.lesson_sessions
+        (id,owner_id,concept_id,mode,generation_state,lesson,source_mode,citation_snapshot,content_version)
+        values($1,$2,$3,'learn','ready',$4,$5,$6,$7)`,
+      [sessionId, profile.userId, conceptId, JSON.stringify({ ...source.lesson, id: sessionId }), source.source_mode,
+        JSON.stringify(source.citation_snapshot), source.content_version]);
+      await db.query(`insert into public.assessment_rounds(id,session_id,owner_id,kind,questions,source_mode,assessment_basis)
+        values($1,$2,$3,'initial',$4,$5,$6)`,
+      [roundId, sessionId, profile.userId, JSON.stringify(round.questions), round.source_mode, round.assessment_basis]);
+      await db.query(`insert into app_private.assessment_secrets(round_id,answer_keys,feedback_criteria) values($1,$2,$3)`,
+        [roundId, JSON.stringify(round.answer_keys), JSON.stringify(round.feedback_criteria)]);
+      return sessionId;
+    });
+    return copiedId ? get(profile.userId, copiedId) : null;
+  }
+  async function reuse(profile: Profile, conceptId: string, requestId: string): Promise<SavedSession | null> {
+    if (!uuid.safeParse(conceptId).success || !uuid.safeParse(requestId).success)
+      throw new AiOperationError('INVALID_OUTPUT', 'Invalid concept or request ID.');
+    const completed = await pool.query<{ result_id: string }>(`
+      select result_id from app_private.operation_requests
+      where owner_id=$1 and operation_kind=$2 and request_id=$3 and state='completed' and result_id is not null`,
+    [profile.userId, kind, requestId]);
+    if (completed.rows[0]) {
+      const saved = await get(profile.userId, completed.rows[0].result_id);
+      if (saved && saved.conceptId === conceptId) return saved;
+      throw new AiOperationError('IDEMPOTENCY_CONFLICT', 'Request ID was reused.');
+    }
+    const reusable = await pool.query<{ id: string }>(`select s.id from public.lesson_sessions s
+      join public.topic_tree_nodes t on t.id=s.topic_node_id and t.owner_id=s.owner_id
+      where s.owner_id=$1 and s.concept_id=$2 and s.generation_state='ready'
+      order by s.created_at limit 1`, [profile.userId, conceptId]);
+    if (reusable.rows[0]) {
+      const saved = await get(profile.userId, reusable.rows[0].id);
+      if (saved) return saved;
+    }
+    return copySharedLesson(profile, conceptId, requestId);
+  }
   return {
     get,
     async setPosition(ownerId, sessionId, step) {
@@ -223,26 +288,10 @@ export function createGenerationService(databaseUrl = process.env.DATABASE_URL?.
         and $3 < jsonb_array_length(lesson->'steps') returning current_step`, [sessionId, ownerId, step]);
       return updated.rows[0]?.current_step ?? null;
     },
+    reuse,
     async start(profile, conceptId, requestId) {
-      if (!uuid.safeParse(conceptId).success || !uuid.safeParse(requestId).success)
-        throw new AiOperationError('INVALID_OUTPUT', 'Invalid concept or request ID.');
-      const completed = await pool.query<{ result_id: string }>(`
-        select result_id from app_private.operation_requests
-        where owner_id=$1 and operation_kind=$2 and request_id=$3 and state='completed' and result_id is not null`,
-      [profile.userId, kind, requestId]);
-      if (completed.rows[0]) {
-        const saved = await get(profile.userId, completed.rows[0].result_id);
-        if (saved && saved.conceptId === conceptId) return saved;
-        throw new AiOperationError('IDEMPOTENCY_CONFLICT', 'Request ID was reused.');
-      }
-      const reusable = await pool.query<{ id: string }>(`select s.id from public.lesson_sessions s
-        join public.topic_tree_nodes t on t.id=s.topic_node_id and t.owner_id=s.owner_id
-        where s.owner_id=$1 and s.concept_id=$2 and s.generation_state='ready'
-        order by s.created_at limit 1`, [profile.userId, conceptId]);
-      if (reusable.rows[0]) {
-        const saved = await get(profile.userId, reusable.rows[0].id);
-        if (saved) return saved;
-      }
+      const reused = await reuse(profile, conceptId, requestId);
+      if (reused) return reused;
       const { input, privateTopic } = await loadInput(profile, conceptId);
       const inputHash = createHash('sha256').update(JSON.stringify(input)).digest('hex');
       const reserved = await transaction(pool, async db => {
@@ -310,6 +359,6 @@ export function createGenerationService(databaseUrl = process.env.DATABASE_URL?.
         throw error;
       }
     },
-    close: () => pool.end(),
+    close: async () => undefined, // shared pool is closed once at shutdown
   };
 }
