@@ -30,7 +30,7 @@ const responseSchema = { type: 'object', properties: {
 }, required: ['answer', 'sourceMode', 'citationChunkIds', 'highlightNodeIds', 'highlightEdgeIds'] };
 
 export function createTutorProvider(model = openRouterModel()): TutorProvider {
-  if (!process.env.OPENROUTER_API_KEY?.trim()) throw new AiOperationError('CONFIGURATION', 'OpenRouter is not configured.');
+  if (!(process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim()) throw new AiOperationError('CONFIGURATION', 'OpenRouter is not configured.');
   return prompt => chatJson({ prompt, model, maxTokens: 1500, timeoutMs: 30_000,
     schema: { name: 'tutor_reply', schema: responseSchema } });
 }

@@ -22,7 +22,7 @@ The tree shows where a topic was added; a generated parent-child link is not a v
 
 ## AI Integration
 
-The Express server calls models through [OpenRouter](https://openrouter.ai) (`OPENROUTER_API_KEY`); the browser never holds the key. `OPENROUTER_MODEL` (default `google/gemini-2.5-flash`) proposes topics and generates structured lessons, diagrams, questions, and tutor replies, using JSON Schema structured output. Source discovery for student-suggested topics uses OpenRouter's web search tool (Exa engine, about US$0.007 per search plus tokens) to propose candidate URLs; catalogue lessons use the curated starter passages and never search. The server fetches and checks those pages itself, retrieves saved passages, validates citations and output shape, then stores the accepted lesson and private assessment keys. Catalogue lessons are cached in Postgres and reused for later visitors, so each starter topic is generated once.
+The Express server calls models through [OpenRouter](https://openrouter.ai) (`API_KEY`); the browser never holds the key. `MODEL_NAME` (default `google/gemini-2.5-flash`) proposes topics and generates structured lessons, diagrams, questions, and tutor replies, using JSON Schema structured output. Source discovery for student-suggested topics uses OpenRouter's web search tool (Exa engine, about US$0.007 per search plus tokens) to propose candidate URLs; catalogue lessons use the curated starter passages and never search. The server fetches and checks those pages itself, retrieves saved passages, validates citations and output shape, then stores the accepted lesson and private assessment keys. Catalogue lessons are cached in Postgres and reused for later visitors, so each starter topic is generated once.
 
 AI-generated assessment keys are labelled **AI-assessed** even when the lesson has sources. Multiple-choice grading and learning status are computed by the server from stored answers and evidence, not decided by the model. Suggestions, source discovery, lesson generation, and tutor replies require working provider access; failures are shown as unavailable or retry states rather than a fabricated lesson.
 
@@ -40,7 +40,7 @@ AI-generated assessment keys are labelled **AI-assessed** even when the lesson h
 You need Node.js 24, npm 11, a Postgres database (a Neon branch works) and an OpenRouter API key.
 
 1. Install the workspaces: `npm ci`
-2. Copy `.env.example` to `.env` and set at least `DATABASE_URL` and `OPENROUTER_API_KEY`. The API creates its schema and the starter catalogue on start; there is no migration step.
+2. Copy `.env.example` to `.env` and set at least `DATABASE_URL` and `API_KEY`. The API creates its schema and the starter catalogue on start; there is no migration step.
 3. Start the frontend and API together with `npm run dev`, then open `http://127.0.0.1:5173`. Vite forwards `/api` to the Express API on port 8080.
 
 `npm run typecheck`, `npm test` and `npm run lint` run the local checks; the database tests use embedded PostgreSQL (PGlite).

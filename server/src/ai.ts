@@ -61,7 +61,7 @@ export class AiOperationError extends Error {
 }
 
 export function createOpenRouterProvider(model = openRouterModel()): AiProvider {
-  if (!process.env.OPENROUTER_API_KEY?.trim()) throw new AiOperationError('CONFIGURATION', 'OpenRouter key is required.');
+  if (!(process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim()) throw new AiOperationError('CONFIGURATION', 'OpenRouter key is required.');
   return {
     async generate(prompt, maxOutputTokens, timeoutMs) {
       const response = await chat({ prompt, model, maxTokens: maxOutputTokens, timeoutMs,

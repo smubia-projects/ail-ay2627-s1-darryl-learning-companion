@@ -132,7 +132,7 @@ export function createProfileService(databaseUrl = process.env.DATABASE_URL?.tri
         citationsByConcept.set(row.concept_id, links);
       }
       const ready = new Set(availability.rows.map(row => row.id));
-      const generationReady = Boolean(process.env.OPENROUTER_API_KEY?.trim());
+      const generationReady = Boolean((process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim());
       const progressRows = progress.rows.map(row => ({ ...row,
         last_reviewed_at: row.last_reviewed_at ? iso(row.last_reviewed_at) : null, updated_at: iso(row.updated_at) }));
       const sessionRows = sessions.rows.map(row => ({ ...row, created_at: iso(row.created_at) }));

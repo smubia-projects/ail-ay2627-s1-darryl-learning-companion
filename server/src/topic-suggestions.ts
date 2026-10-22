@@ -269,7 +269,7 @@ export function createTopicSuggestionService(
     },
     async suggest(profile, home, parentKey, requestId, prompt) {
       if (!pool) throw new AiOperationError('CONFIGURATION', 'Topic storage is unavailable.');
-      if (!generate && !process.env.OPENROUTER_API_KEY?.trim())
+      if (!generate && !(process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim())
         throw new AiOperationError('CONFIGURATION', 'OpenRouter is not configured.');
       const parentTitle = await parentTitleFor(pool, profile.userId, home, parentKey);
       if (!parentTitle) throw new ApiError(404, 'NOT_FOUND', 'That topic is unavailable.');

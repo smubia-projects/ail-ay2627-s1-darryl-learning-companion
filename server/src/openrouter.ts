@@ -1,7 +1,7 @@
 import { AiOperationError } from './ai.js';
 
 // All LLM traffic goes through OpenRouter's OpenAI-compatible chat completions API.
-const BASE_URL = 'https://openrouter.ai/api/v1';
+const baseUrl = () => ((process.env.API_BASE_URL || process.env.OPENROUTER_BASE_URL)?.trim() || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
 export const DEFAULT_MODEL = 'google/gemini-2.5-flash';
 
 export type JsonSchema = Record<string, unknown>;
@@ -10,11 +10,12 @@ export type ChatResult = { text: string; finishReason?: string | undefined;
   citations: { url: string; title?: string | undefined }[] };
 
 export function openRouterModel(name: 'OPENROUTER_MODEL' | 'OPENROUTER_SEARCH_MODEL' = 'OPENROUTER_MODEL'): string {
-  return process.env[name]?.trim() || process.env.OPENROUTER_MODEL?.trim() || DEFAULT_MODEL;
+  const purpose = name === 'OPENROUTER_SEARCH_MODEL' ? (process.env.SEARCH_MODEL_NAME || process.env.OPENROUTER_SEARCH_MODEL)?.trim() : undefined;
+  return purpose || (process.env.MODEL_NAME || process.env.OPENROUTER_MODEL)?.trim() || DEFAULT_MODEL;
 }
 
 export function openRouterConfigured() {
-  return Boolean(process.env.OPENROUTER_API_KEY?.trim());
+  return Boolean((process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim());
 }
 
 type ChatOptions = {
@@ -29,7 +30,7 @@ type ChatOptions = {
 };
 
 export async function chat(options: ChatOptions): Promise<ChatResult> {
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  const apiKey = (process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim();
   if (!apiKey) throw new AiOperationError('CONFIGURATION', 'OpenRouter is not configured.');
   const body: Record<string, unknown> = {
     model: options.model ?? openRouterModel(),
@@ -40,7 +41,7 @@ export async function chat(options: ChatOptions): Promise<ChatResult> {
     json_schema: { name: options.schema.name, strict: false, schema: options.schema.schema } };
   if (options.webSearch) body.tools = [{ type: 'openrouter:web_search',
     parameters: { engine: 'exa', max_results: options.webSearch.maxResults } }];
-  const response = await fetch(`${BASE_URL}/chat/completions`, {
+  const response = await fetch(`${baseUrl()}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json',
       'X-Title': 'LearningCompanion' },

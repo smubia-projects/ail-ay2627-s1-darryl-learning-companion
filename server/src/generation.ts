@@ -66,7 +66,7 @@ const generationResponseSchema = { type: 'object', properties: { title: string, 
 
 export function createGenerationProvider(model = openRouterModel(), responseSchema: JsonSchema = generationResponseSchema,
   schemaName = 'lesson'): GenerateProvider {
-  if (!process.env.OPENROUTER_API_KEY?.trim()) throw new AiOperationError('CONFIGURATION', 'OpenRouter is not configured.');
+  if (!(process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim()) throw new AiOperationError('CONFIGURATION', 'OpenRouter is not configured.');
   // One lesson call can take a while; two attempts stay inside the 300 s Cloud Run request timeout.
   return prompt => chatJson({ prompt, model, maxTokens: 9000, timeoutMs: 120_000,
     schema: { name: schemaName, schema: responseSchema } });
