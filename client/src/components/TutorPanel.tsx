@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { handledByGate } from '@/lib/api';
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { ArrowRight, LoaderCircle } from 'lucide-react';
 import type { TutorHistory, TutorMessage } from '@learning-companion/shared';
@@ -39,7 +40,7 @@ export function TutorPanel({ sessionId, stepId, citations, annotation, onClearAn
           ? { ...page, messages: [...page.messages, saved.userMessage, saved.reply] } : page),
       } : { pages: [{ messages: [saved.userMessage, saved.reply], nextBefore: null }], pageParams: [null] });
       setQuestion(''); onClearAnnotation?.();
-    } catch { setSendError(true); }
+    } catch (caught) { if (!handledByGate(caught)) setSendError(true); }
     finally { sending.current = false; setPending(false); }
   }
 

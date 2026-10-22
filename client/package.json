@@ -13,7 +13,6 @@
   "dependencies": {
     "@learning-companion/shared": "file:../shared",
     "@radix-ui/react-slot": "^1.2.3",
-    "@supabase/supabase-js": "^2.117.3",
     "@tanstack/react-query": "^5.90.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

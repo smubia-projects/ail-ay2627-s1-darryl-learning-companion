@@ -6,7 +6,7 @@ import tailwindcss from '@tailwindcss/vite';
 const envDir = fileURLToPath(new URL('..', import.meta.url));
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, envDir, '');
-  const apiPort = process.env.PORT?.trim() || env.PORT?.trim() || '3000';
+  const apiPort = process.env.PORT?.trim() || env.PORT?.trim() || '8080';
   return {
     plugins: [react(), tailwindcss()], envDir,
     resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
