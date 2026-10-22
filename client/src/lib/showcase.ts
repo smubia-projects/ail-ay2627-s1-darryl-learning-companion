@@ -7,7 +7,7 @@ export const PROJECT_CTA = {
   description:
     'This demo prepared {count} AI lessons and answers for you. Want to keep exploring without limits? Join us and build projects like this.',
   programme: 'AI Lodge',
-  programmeLink: 'https://www.smubia.com/ai-lodge',
+  programmeLink: 'https://www.smubia.com/ailodge',
   githubLink: 'https://github.com/smubia-projects/ail-ay2627-s1-darryl-learning-companion',
-  showcaseLink: 'https://www.smubia.com/showcase',
+  showcaseLink: 'https://www.smubia.com/Projects',
 };

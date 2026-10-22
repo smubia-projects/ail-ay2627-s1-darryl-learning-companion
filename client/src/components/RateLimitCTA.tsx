@@ -147,20 +147,6 @@ export function RateLimitCTA({ queriesMade, onDismiss }: RateLimitCTAProps) {
             <span style={arrowStyle}>→</span>
           </a>
           <a
-            href={project.githubLink}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-              ...ctaButtonStyle,
-              background: 'rgba(255,255,255,0.06)',
-              border: '1px solid rgba(255,255,255,0.1)',
-              color: '#e5e5e5',
-            }}
-          >
-            Self-host from GitHub
-            <span style={arrowStyle}>→</span>
-          </a>
-          <a
             href={project.showcaseLink}
             target="_blank"
             rel="noopener noreferrer"
@@ -172,6 +158,20 @@ export function RateLimitCTA({ queriesMade, onDismiss }: RateLimitCTAProps) {
             }}
           >
             Explore other projects
+            <span style={arrowStyle}>→</span>
+          </a>
+          <a
+            href={project.githubLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              ...ctaButtonStyle,
+              background: 'rgba(255,255,255,0.06)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              color: '#e5e5e5',
+            }}
+          >
+            View on GitHub
             <span style={arrowStyle}>→</span>
           </a>
         </div>
