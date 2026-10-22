@@ -1,0 +1,24 @@
+# The API image needs package*.json, tsconfig.base.json, shared/, server/ and content/.
+**/node_modules
+**/dist
+**/coverage
+client/src
+client/public
+client/index.html
+design
+docs
+scripts
+tests
+playwright-report
+test-results
+.git
+.github
+.vercel
+.env
+.env.*
+!.env.example
+*.md
+*.log
+*.tsbuildinfo
+Dockerfile
+.dockerignore
