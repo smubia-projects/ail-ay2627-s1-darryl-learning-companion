@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { GoogleGenAI, Type } from '@google/genai';
 import { Pool } from 'pg';
 import { z } from 'zod';
 import { lessonSchema, tutorHistorySchema, tutorMessageSchema, tutorReplySchema,
   type Lesson, type Profile, type TutorHistory, type TutorMessage, type TutorRequest } from '@learning-companion/shared';
 import { AiOperationError } from './ai.js';
+import { chatJson, openRouterModel } from './openrouter.js';
 import { reserveCall, transaction } from './ai-store.js';
 import { ApiError } from './errors.js';
 
@@ -22,26 +22,17 @@ const outputSchema = z.strictObject({
   citationChunkIds: z.array(z.uuid()).max(3), highlightNodeIds: z.array(z.string()).max(8),
   highlightEdgeIds: z.array(z.string()).max(24),
 });
-const responseSchema = { type: Type.OBJECT, properties: {
-  answer: { type: Type.STRING }, sourceMode: { type: Type.STRING, enum: ['source_grounded', 'unverified'] },
-  citationChunkIds: { type: Type.ARRAY, items: { type: Type.STRING } },
-  highlightNodeIds: { type: Type.ARRAY, items: { type: Type.STRING } },
-  highlightEdgeIds: { type: Type.ARRAY, items: { type: Type.STRING } },
+const responseSchema = { type: 'object', properties: {
+  answer: { type: 'string' }, sourceMode: { type: 'string', enum: ['source_grounded', 'unverified'] },
+  citationChunkIds: { type: 'array', items: { type: 'string' } },
+  highlightNodeIds: { type: 'array', items: { type: 'string' } },
+  highlightEdgeIds: { type: 'array', items: { type: 'string' } },
 }, required: ['answer', 'sourceMode', 'citationChunkIds', 'highlightNodeIds', 'highlightEdgeIds'] };
 
-export function createTutorProvider(apiKey = process.env.GEMINI_API_KEY?.trim(), model = process.env.GEMINI_MODEL?.trim()): TutorProvider {
-  if (!apiKey || !model) throw new AiOperationError('CONFIGURATION', 'Gemini is not configured.');
-  const ai = new GoogleGenAI({ apiKey });
-  return async prompt => {
-    const response = await ai.models.generateContent({ model, contents: prompt, config: {
-      responseMimeType: 'application/json', responseSchema,
-      maxOutputTokens: 1500, abortSignal: AbortSignal.timeout(25_000),
-      httpOptions: { timeout: 25_000, retryOptions: { attempts: 1 } },
-    } });
-    if (response.promptFeedback?.blockReason || response.candidates?.[0]?.finishReason === 'SAFETY' || !response.text)
-      throw new AiOperationError('REFUSAL', 'Gemini did not return a tutor reply.');
-    return response.text;
-  };
+export function createTutorProvider(model = openRouterModel()): TutorProvider {
+  if (!process.env.OPENROUTER_API_KEY?.trim()) throw new AiOperationError('CONFIGURATION', 'OpenRouter is not configured.');
+  return prompt => chatJson({ prompt, model, maxTokens: 1500, timeoutMs: 30_000,
+    schema: { name: 'tutor_reply', schema: responseSchema } });
 }
 
 export function tutorPrompt(lesson: Lesson, input: TutorRequest, passages: Passage[], recent: TutorMessage[]) {

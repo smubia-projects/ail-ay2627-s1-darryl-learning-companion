@@ -1,4 +1,3 @@
-import { Type } from '@google/genai';
 import { z } from 'zod';
 import { lessonSchema, lessonStepSchema, type Lesson } from '@learning-companion/shared';
 import { AiOperationError } from './ai.js';
@@ -10,9 +9,9 @@ export const detailedExplanationSchema = lessonStepSchema.shape.explanation.refi
 const contentStepSchema = lessonStepSchema.pick({ id: true, caption: true, explanation: true, workedExample: true, commonMistake: true })
   .extend({ explanation: detailedExplanationSchema });
 const contentSchema = z.strictObject({ steps: z.array(contentStepSchema).min(4).max(6) });
-const text = { type: Type.STRING };
-export const lessonContentResponseSchema = { type: Type.OBJECT, properties: {
-  steps: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: {
+const text = { type: 'string' };
+export const lessonContentResponseSchema = { type: 'object', properties: {
+  steps: { type: 'array', items: { type: 'object', properties: {
     id: text, caption: text, explanation: text, workedExample: text, commonMistake: text,
   }, required: ['id', 'caption', 'explanation', 'workedExample', 'commonMistake'] } },
 }, required: ['steps'] };

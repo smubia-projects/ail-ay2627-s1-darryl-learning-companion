@@ -11,7 +11,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@google/genai": "^2.28.0",
     "@learning-companion/shared": "file:../shared",
     "@mozilla/readability": "^0.6.0",
     "@supabase/supabase-js": "^2.117.3",
