@@ -160,9 +160,9 @@ export function createTopicSuggestionService(
         properties: { title: { type: 'string' }, objective: { type: 'string' }, parentRef: { type: 'string' } },
         required: ['title', 'objective', 'parentRef'] } },
     }, required: ['topics'] } } }));
-  // Source discovery replaces Gemini's Google Search grounding with OpenRouter's web search
-  // server tool (Exa engine, ~US$0.007 per search plus tokens). It runs once per student
-  // topic; catalogue lessons use the curated, seeded passages and never search.
+  // Source discovery uses Gemini's Google Search grounding through apiyi's Gemini-native endpoint
+  // (~US$0.014 per search plus tokens). It runs once per student topic; catalogue lessons use the
+  // curated, seeded passages and never search.
   const discoverSources = search ?? (async (title: string, objective: string, excluded: string[]) => {
     const response = await chat({ model: openRouterModel('OPENROUTER_SEARCH_MODEL'), maxTokens: 800, timeoutMs: 45_000,
       webSearch: { maxResults: Number(process.env.WEB_SEARCH_MAX_RESULTS || 5) },

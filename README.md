@@ -22,7 +22,7 @@ The tree shows where a topic was added; a generated parent-child link is not a v
 
 ## AI Integration
 
-The Express server calls models through [OpenRouter](https://openrouter.ai) (`API_KEY`); the browser never holds the key. `MODEL_NAME` (default `google/gemini-2.5-flash`) proposes topics and generates structured lessons, diagrams, questions, and tutor replies, using JSON Schema structured output. Source discovery for student-suggested topics uses OpenRouter's web search tool (Exa engine, about US$0.007 per search plus tokens) to propose candidate URLs; catalogue lessons use the curated starter passages and never search. The server fetches and checks those pages itself, retrieves saved passages, validates citations and output shape, then stores the accepted lesson and private assessment keys. Catalogue lessons are cached in Postgres and reused for later visitors, so each starter topic is generated once.
+The Express server calls models through [apiyi](https://apiyi.com) (`API_KEY`); the browser never holds the key. `MODEL_NAME` (default `gemini-3.5-flash-lite`) proposes topics and generates structured lessons, diagrams, questions, and tutor replies, using JSON Schema structured output. Source discovery for student-suggested topics uses Gemini's Google Search grounding through apiyi's Gemini-native endpoint (`SEARCH_MODEL_NAME`, default `MODEL_NAME`; about US$0.014 per search plus tokens) to propose candidate URLs; catalogue lessons use the curated starter passages and never search. The server fetches and checks those pages itself, retrieves saved passages, validates citations and output shape, then stores the accepted lesson and private assessment keys. Catalogue lessons are cached in Postgres and reused for later visitors, so each starter topic is generated once.
 
 AI-generated assessment keys are labelled **AI-assessed** even when the lesson has sources. Multiple-choice grading and learning status are computed by the server from stored answers and evidence, not decided by the model. Suggestions, source discovery, lesson generation, and tutor replies require working provider access; failures are shown as unavailable or retry states rather than a fabricated lesson.
 
@@ -30,7 +30,7 @@ AI-generated assessment keys are labelled **AI-assessed** even when the lesson h
 
 | Service or tool | Use |
 | --- | --- |
-| OpenRouter (Gemini 2.5 Flash, web search) | Topic suggestions, candidate source discovery, lesson and question generation, and tutor replies. |
+| apiyi (Gemini 3.5 Flash Lite, Google Search grounding) | Topic suggestions, candidate source discovery, lesson and question generation, and tutor replies. |
 | Neon Postgres | Saved learning data per anonymous visitor, the shared lesson cache, and approved and discovered passage snapshots. |
 | Upstash Redis | Per-IP rate limiting via the AI Lodge shared engine. |
 | React, Vite, Tailwind CSS, Express, TypeScript, Zod, and PostgreSQL | Application UI, API, validation, and storage. |

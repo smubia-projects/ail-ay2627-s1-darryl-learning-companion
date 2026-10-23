@@ -1,8 +1,8 @@
 import { AiOperationError } from './ai.js';
 
 // All LLM traffic goes through OpenRouter's OpenAI-compatible chat completions API.
-const baseUrl = () => ((process.env.API_BASE_URL || process.env.OPENROUTER_BASE_URL)?.trim() || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-export const DEFAULT_MODEL = 'google/gemini-2.5-flash';
+const baseUrl = () => ((process.env.API_BASE_URL || process.env.OPENROUTER_BASE_URL)?.trim() || 'https://api.apiyi.com/v1').replace(/\/+$/, '');
+export const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 
 export type JsonSchema = Record<string, unknown>;
 export type ChatResult = { text: string; finishReason?: string | undefined;
@@ -25,13 +25,17 @@ type ChatOptions = {
   model?: string;
   /** JSON Schema for structured output (response_format json_schema). */
   schema?: { name: string; schema: JsonSchema };
-  /** Enable OpenRouter's web search server tool (used for source discovery only). */
+  /**
+   * Search the web (source discovery only). apiyi's chat completions ignore search tools, so this
+   * goes to the gateway's Gemini-native endpoint with Google Search grounding instead.
+   */
   webSearch?: { maxResults: number };
 };
 
 export async function chat(options: ChatOptions): Promise<ChatResult> {
   const apiKey = (process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim();
   if (!apiKey) throw new AiOperationError('CONFIGURATION', 'OpenRouter is not configured.');
+  if (options.webSearch) return searchWithGemini(options, apiKey);
   const body: Record<string, unknown> = {
     model: options.model ?? openRouterModel(),
     messages: [{ role: 'user', content: options.prompt }],
@@ -39,8 +43,6 @@ export async function chat(options: ChatOptions): Promise<ChatResult> {
   };
   if (options.schema) body.response_format = { type: 'json_schema',
     json_schema: { name: options.schema.name, strict: false, schema: options.schema.schema } };
-  if (options.webSearch) body.tools = [{ type: 'openrouter:web_search',
-    parameters: { engine: 'exa', max_results: options.webSearch.maxResults } }];
   const response = await fetch(`${baseUrl()}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json',
@@ -65,6 +67,36 @@ export async function chat(options: ChatOptions): Promise<ChatResult> {
     .map(item => ({ url: item.url_citation!.url!, title: item.url_citation?.title }));
   return { text: stripFence(text), finishReason: choice?.finish_reason, citations,
     usage: { promptTokens: data.usage?.prompt_tokens, outputTokens: data.usage?.completion_tokens } };
+}
+
+/** Gemini-native generateContent with the google_search tool; sources come from groundingMetadata. */
+async function searchWithGemini(options: ChatOptions, apiKey: string): Promise<ChatResult> {
+  const model = options.model ?? openRouterModel('OPENROUTER_SEARCH_MODEL');
+  const root = baseUrl().replace(/\/v1$/, '');
+  const response = await fetch(`${root}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    method: 'POST',
+    headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts: [{ text: options.prompt }] }],
+      generationConfig: { maxOutputTokens: options.maxTokens }, tools: [{ google_search: {} }] }),
+    signal: AbortSignal.timeout(options.timeoutMs),
+  });
+  if (!response.ok) {
+    await response.text().catch(() => '');
+    throw new AiOperationError('PROVIDER_FAILURE', `Web search request failed with HTTP ${response.status}.`);
+  }
+  const data = await response.json() as {
+    candidates?: { finishReason?: string; content?: { parts?: { text?: string }[] };
+      groundingMetadata?: { groundingChunks?: { web?: { uri?: string; title?: string } }[] } }[];
+    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  };
+  const candidate = data.candidates?.[0];
+  const text = (candidate?.content?.parts ?? []).map(part => part.text ?? '').join('');
+  const citations = (candidate?.groundingMetadata?.groundingChunks ?? [])
+    .filter(chunk => chunk.web?.uri)
+    .slice(0, options.webSearch?.maxResults ?? 5)
+    .map(chunk => ({ url: chunk.web!.uri!, title: chunk.web?.title }));
+  return { text, finishReason: candidate?.finishReason, citations,
+    usage: { promptTokens: data.usageMetadata?.promptTokenCount, outputTokens: data.usageMetadata?.candidatesTokenCount } };
 }
 
 /** JSON-returning helper: throws REFUSAL when the model returns nothing. */
