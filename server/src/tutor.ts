@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Pool } from 'pg';
+import { sharedPool } from './db.js';
 import { z } from 'zod';
 import { lessonSchema, tutorHistorySchema, tutorMessageSchema, tutorReplySchema,
   type Lesson, type Profile, type TutorHistory, type TutorMessage, type TutorRequest } from '@learning-companion/shared';
@@ -75,7 +75,7 @@ function publicMessage(row: MessageRow): TutorMessage {
 
 export function createTutorService(databaseUrl = process.env.DATABASE_URL?.trim(), provider?: TutorProvider): TutorService {
   if (!databaseUrl) throw new AiOperationError('CONFIGURATION', 'Database is not configured.');
-  const pool = new Pool({ connectionString: databaseUrl, ssl: { rejectUnauthorized: false }, max: 3 });
+  const pool = sharedPool(databaseUrl);
   async function session(ownerId: string, sessionId: string) {
     const row = (await pool.query<{ concept_id: string; lesson: unknown; source_mode: 'source_grounded' | 'unverified' }>(`
       select concept_id,lesson,source_mode from public.lesson_sessions
@@ -180,6 +180,6 @@ export function createTutorService(databaseUrl = process.env.DATABASE_URL?.trim(
         throw error;
       }
     },
-    close: () => pool.end(),
+    close: async () => undefined, // shared pool is closed once at shutdown
   };
 }

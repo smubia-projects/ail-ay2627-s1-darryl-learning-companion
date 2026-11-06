@@ -1,11 +1,12 @@
-import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod';
 import { type CompleteOnboarding, type HomeData, type Profile, type Recommendations, homeSchema, profileSchema } from '@learning-companion/shared';
+import { sharedPool } from './db.js';
 import { ApiError } from './errors.js';
 
 export type ProfileService = {
-  getProfile: (accessToken: string) => Promise<Profile>;
-  completeOnboarding?: (accessToken: string, input: CompleteOnboarding) => Promise<Profile>;
-  getHome?: (accessToken: string) => Promise<HomeData>;
+  getProfile: (visitorId: string) => Promise<Profile>;
+  completeOnboarding?: (visitorId: string, input: CompleteOnboarding) => Promise<Profile>;
+  getHome?: (visitorId: string) => Promise<HomeData>;
 };
 
 const dayMs = 24 * 60 * 60 * 1000;
@@ -61,126 +62,121 @@ export function recommend(concepts: HomeData['concepts'], profile: Profile,
   return { learn, review: rankedReview.map(({ priority: _priority, ...item }) => item) };
 }
 
-export function createProfileService(
-  url = process.env.SUPABASE_URL?.trim(),
-  publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY?.trim(),
-): ProfileService {
-  if (!url || !publishableKey) {
-    return { getProfile: async () => { throw new ApiError(503, 'SERVICE_UNAVAILABLE', 'Supabase is not configured.'); } };
+const iso = (value: unknown) => value instanceof Date ? value.toISOString() : String(value);
+const visitorIdSchema = z.uuid();
+
+/**
+ * Anonymous visitors replace Supabase Auth. The browser generates a random UUID once,
+ * keeps it in localStorage and sends it as the bearer token; the first request creates
+ * the visitor's profile row. Every learner-owned query filters by this owner ID.
+ */
+export function createProfileService(databaseUrl = process.env.DATABASE_URL?.trim()): ProfileService {
+  if (!databaseUrl) {
+    return { getProfile: async () => { throw new ApiError(500, 'SERVICE_UNAVAILABLE', 'The database is not configured.'); } };
   }
-  const verifier = createClient(url, publishableKey, {
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-  });
+  const pool = sharedPool(databaseUrl);
+  async function getProfile(visitorId: string): Promise<Profile> {
+    if (!visitorIdSchema.safeParse(visitorId).success)
+      throw new ApiError(401, 'UNAUTHENTICATED', 'Reload the page to start a new learning session.');
+    await pool.query('insert into public.profiles(user_id) values($1) on conflict (user_id) do nothing', [visitorId]);
+    const profile = (await pool.query<{ user_id: string; interests: string[]; experience_level: string; onboarding_complete: boolean;
+      timezone: string; reduced_motion: boolean; created_at: Date }>(`select user_id,interests,experience_level,onboarding_complete,
+      timezone,reduced_motion,created_at from public.profiles where user_id=$1`, [visitorId])).rows[0];
+    if (!profile) throw new ApiError(500, 'SERVICE_UNAVAILABLE', 'Your profile is temporarily unavailable.');
+    return profileSchema.parse({
+      userId: profile.user_id, isAnonymous: true,
+      interests: profile.interests, experienceLevel: profile.experience_level,
+      onboardingComplete: profile.onboarding_complete, timezone: profile.timezone,
+      reducedMotion: profile.reduced_motion, createdAt: iso(profile.created_at),
+    });
+  }
   return {
-    async getProfile(accessToken) {
-      const { data: { user }, error: authError } = await verifier.auth.getUser(accessToken);
-      if (authError || !user || user.is_anonymous) throw new ApiError(401, 'UNAUTHENTICATED', 'Sign in with Google to continue.');
-      // Database requests use the verified learner's JWT so RLS remains effective.
-      // This client never receives a service-role key.
-      const scoped = createClient(url, publishableKey, {
-        global: { headers: { Authorization: `Bearer ${accessToken}` } },
-        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-      });
-      const { data: profile, error: profileError } = await scoped.from('profiles')
-        .select('user_id,interests,experience_level,onboarding_complete,timezone,reduced_motion,created_at')
-        .eq('user_id', user.id).single();
-      if (profileError || !profile) throw new ApiError(503, 'SERVICE_UNAVAILABLE', 'Your profile is temporarily unavailable.');
-      return profileSchema.parse({
-        userId: profile.user_id, isAnonymous: false,
-        interests: profile.interests, experienceLevel: profile.experience_level,
-        onboardingComplete: profile.onboarding_complete, timezone: profile.timezone,
-        reducedMotion: profile.reduced_motion, createdAt: profile.created_at,
-      });
+    getProfile,
+    async completeOnboarding(visitorId, input) {
+      const profile = await getProfile(visitorId);
+      await pool.query(`update public.profiles set interests=$2, experience_level=$3, timezone=$4,
+        diagnostic_evidence=$5, onboarding_complete=true, updated_at=now() where user_id=$1`,
+      [profile.userId, input.interests, input.experienceLevel, input.timezone, JSON.stringify(input.answers)]);
+      return getProfile(visitorId);
     },
-    async completeOnboarding(accessToken, input) {
-      const profile = await this.getProfile(accessToken);
-      const scoped = createClient(url, publishableKey, {
-        global: { headers: { Authorization: `Bearer ${accessToken}` } },
-        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-      });
-      const { error } = await scoped.from('profiles').update({
-        interests: input.interests, experience_level: input.experienceLevel,
-        timezone: input.timezone, diagnostic_evidence: input.answers,
-        onboarding_complete: true, updated_at: new Date().toISOString(),
-      }).eq('user_id', profile.userId);
-      if (error) throw new ApiError(503, 'SERVICE_UNAVAILABLE', 'Could not save your starting point.');
-      return this.getProfile(accessToken);
-    },
-    async getHome(accessToken) {
-      const profile = await this.getProfile(accessToken);
-      const scoped = createClient(url, publishableKey, {
-        global: { headers: { Authorization: `Bearer ${accessToken}` } },
-        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-      });
+    async getHome(visitorId) {
+      const profile = await getProfile(visitorId);
+      const owner = profile.userId;
       const [catalogue, progress, sessions, availability, prerequisites, rounds] = await Promise.all([
-        scoped.from('concepts').select('id,slug,title,area,objectives,catalogue_order,content_available').eq('supported', true).order('catalogue_order'),
-        scoped.from('user_concept_progress').select('concept_id,learning_status,latest_completed_round_id,last_reviewed_at,updated_at').eq('owner_id', profile.userId),
-        scoped.from('lesson_sessions').select('id,concept_id,created_at,completed_at').eq('owner_id', profile.userId)
-          .eq('generation_state', 'ready').not('lesson->>runningExample', 'is', null)
-          .order('created_at', { ascending: false }).limit(2000),
-        scoped.rpc('available_lesson_concepts'),
-        scoped.from('concept_edges').select('from_concept_id,to_concept_id').eq('relation_type', 'prerequisite').eq('reviewed', true),
-        scoped.from('assessment_rounds').select('session_id,qualifies,completed_at').eq('owner_id', profile.userId)
-          .not('completed_at', 'is', null).order('completed_at', { ascending: false }).limit(2000),
+        pool.query<{ id: string; slug: string; title: string; area: string; objectives: { description: string }[]; catalogue_order: number }>(
+          `select id,slug,title,area,objectives,catalogue_order from public.concepts
+          where supported and owner_id is null order by catalogue_order`),
+        pool.query<{ concept_id: string; learning_status: string; latest_completed_round_id: string | null;
+          last_reviewed_at: Date | null; updated_at: Date }>(`select concept_id,learning_status,latest_completed_round_id,
+          last_reviewed_at,updated_at from public.user_concept_progress where owner_id=$1`, [owner]),
+        pool.query<{ id: string; concept_id: string; created_at: Date; completed_at: Date | null }>(`select id,concept_id,
+          created_at,completed_at from public.lesson_sessions where owner_id=$1 and generation_state='ready'
+          and lesson->>'runningExample' is not null order by created_at desc limit 2000`, [owner]),
+        pool.query<{ id: string }>('select id from public.available_lesson_concepts() as id'),
+        pool.query<{ from_concept_id: string; to_concept_id: string }>(`select from_concept_id,to_concept_id
+          from public.concept_edges where relation_type='prerequisite' and reviewed and owner_id is null`),
+        pool.query<{ session_id: string; qualifies: boolean | null; completed_at: Date }>(`select session_id,qualifies,completed_at
+          from public.assessment_rounds where owner_id=$1 and completed_at is not null
+          order by completed_at desc limit 2000`, [owner]),
       ]);
-      if (catalogue.error || progress.error || sessions.error || availability.error || prerequisites.error || rounds.error) throw new ApiError(503, 'SERVICE_UNAVAILABLE', 'Could not load your learning choices.');
-      const conceptIds = (catalogue.data ?? []).map(row => row.id as string);
-      const sourceLinks = conceptIds.length ? await scoped.from('sources')
-        .select('title,canonical_url,source_concepts!inner(concept_id)')
-        .in('source_concepts.concept_id', conceptIds) : { data: [], error: null };
-      if (sourceLinks.error) throw new ApiError(503, 'SERVICE_UNAVAILABLE', 'Could not load topic references.');
+      const conceptIds = catalogue.rows.map(row => row.id);
+      const sourceLinks = conceptIds.length ? (await pool.query<{ title: string; canonical_url: string; concept_id: string }>(`
+        select s.title,s.canonical_url,sc.concept_id from public.sources s
+        join public.source_concepts sc on sc.source_id=s.id
+        where sc.concept_id=any($1::uuid[]) and s.status='approved' and s.permission_review='allowed'
+          and s.active_revision_id is not null order by s.canonical_url`, [conceptIds])).rows : [];
       const citationsByConcept = new Map<string, { title: string; url: string }[]>();
-      for (const row of sourceLinks.data ?? []) {
-        for (const link of row.source_concepts as { concept_id: string }[]) {
-          const links = citationsByConcept.get(link.concept_id) ?? [];
-          links.push({ title: row.title as string, url: row.canonical_url as string });
-          citationsByConcept.set(link.concept_id, links);
-        }
+      for (const row of sourceLinks) {
+        const links = citationsByConcept.get(row.concept_id) ?? [];
+        links.push({ title: row.title, url: row.canonical_url });
+        citationsByConcept.set(row.concept_id, links);
       }
-      const ready = new Set((availability.data ?? []) as string[]);
-      const generationReady = Boolean(process.env.GEMINI_API_KEY?.trim() && process.env.GEMINI_MODEL?.trim() && process.env.DATABASE_URL?.trim());
-      const statuses = new Map((progress.data ?? []).map(row => [row.concept_id as string, row.learning_status as string]));
+      const ready = new Set(availability.rows.map(row => row.id));
+      const generationReady = Boolean((process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim());
+      const progressRows = progress.rows.map(row => ({ ...row,
+        last_reviewed_at: row.last_reviewed_at ? iso(row.last_reviewed_at) : null, updated_at: iso(row.updated_at) }));
+      const sessionRows = sessions.rows.map(row => ({ ...row, created_at: iso(row.created_at) }));
+      const statuses = new Map(progressRows.map(row => [row.concept_id, row.learning_status]));
       const latestByConcept = new Map<string, { id: string; completed: boolean }>();
-      for (const row of sessions.data ?? []) {
-        if (!latestByConcept.has(row.concept_id as string)) latestByConcept.set(row.concept_id as string,
-          { id: row.id as string, completed: Boolean(row.completed_at) });
+      for (const row of sessionRows) {
+        if (!latestByConcept.has(row.concept_id)) latestByConcept.set(row.concept_id, { id: row.id, completed: Boolean(row.completed_at) });
       }
-      const concepts: HomeData['concepts'] = (catalogue.data ?? []).map(row => ({
-        id: row.id as string, slug: row.slug as string, title: row.title as string,
-        description: (row.objectives as { description: string }[])[0]?.description ?? null,
-        objectives: (row.objectives as { description: string }[]).map(objective => objective.description),
-        citations: citationsByConcept.get(row.id as string) ?? [],
-        area: row.area as HomeData['concepts'][number]['area'], order: row.catalogue_order as number,
-        contentAvailable: generationReady && ready.has(row.id as string),
-        sessionId: latestByConcept.get(row.id as string)?.id ?? null,
-        sessionCompleted: latestByConcept.get(row.id as string)?.completed ?? false,
-        status: (statuses.get(row.id as string) ?? 'not_assessed') as HomeData['concepts'][number]['status'],
+      const concepts: HomeData['concepts'] = catalogue.rows.map(row => ({
+        id: row.id, slug: row.slug, title: row.title,
+        description: row.objectives[0]?.description ?? null,
+        objectives: row.objectives.map(objective => objective.description),
+        citations: citationsByConcept.get(row.id) ?? [],
+        area: row.area as HomeData['concepts'][number]['area'], order: row.catalogue_order,
+        contentAvailable: generationReady && ready.has(row.id),
+        sessionId: latestByConcept.get(row.id)?.id ?? null,
+        sessionCompleted: latestByConcept.get(row.id)?.completed ?? false,
+        status: (statuses.get(row.id) ?? 'not_assessed') as HomeData['concepts'][number]['status'],
       }));
-      const sessionConcepts = new Map((sessions.data ?? []).map(row => [row.id as string, row.concept_id as string]));
+      const sessionConcepts = new Map(sessionRows.map(row => [row.id, row.concept_id]));
       const successStreaks = new Map<string, number>();
       const endedStreaks = new Set<string>();
-      for (const round of rounds.data ?? []) {
-        const conceptId = sessionConcepts.get(round.session_id as string);
+      for (const round of rounds.rows) {
+        const conceptId = sessionConcepts.get(round.session_id);
         if (!conceptId || endedStreaks.has(conceptId)) continue;
         if (round.qualifies === true) successStreaks.set(conceptId, (successStreaks.get(conceptId) ?? 0) + 1);
         else endedStreaks.add(conceptId);
       }
-      const recommendations = recommend(concepts, profile, progress.data ?? [], prerequisites.data ?? [], successStreaks);
+      const recommendations = recommend(concepts, profile, progressRows, prerequisites.rows, successStreaks);
       const activityByDate = new Map<string, number>();
       const activityStart = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
-      for (const row of sessions.data ?? []) {
-        if ((row.created_at as string) < activityStart) continue;
-        const date = (row.created_at as string).slice(0, 10);
+      for (const row of sessionRows) {
+        if (row.created_at < activityStart) continue;
+        const date = row.created_at.slice(0, 10);
         activityByDate.set(date, (activityByDate.get(date) ?? 0) + 1);
       }
       const activityCounts = [...activityByDate].map(([date, count]) => ({ date, count })).sort((a, b) => a.date.localeCompare(b.date));
-      const latest = sessions.data?.[0];
-      const unfinished = sessions.data?.find(row => !row.completed_at);
+      const latest = sessionRows[0];
+      const unfinished = sessionRows.find(row => !row.completed_at);
       return homeSchema.parse({
         concepts, recommendations, activityCounts,
-        recentSession: latest ? { id: latest.id as string, conceptId: latest.concept_id as string,
-          createdAt: latest.created_at as string, completed: Boolean(latest.completed_at) } : null,
-        unfinishedSession: unfinished ? { id: unfinished.id as string, conceptId: unfinished.concept_id as string } : null,
+        recentSession: latest ? { id: latest.id, conceptId: latest.concept_id,
+          createdAt: latest.created_at, completed: Boolean(latest.completed_at) } : null,
+        unfinishedSession: unfinished ? { id: unfinished.id, conceptId: unfinished.concept_id } : null,
       });
     },
   };

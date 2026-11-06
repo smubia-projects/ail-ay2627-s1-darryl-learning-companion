@@ -6,8 +6,8 @@ export const errorEnvelopeSchema = z.strictObject({
   error: z.strictObject({ code: z.enum(ERROR_CODES), message: shortTextSchema, requestId: entityIdSchema }),
 });
 export const successEnvelopeSchema = <T extends z.ZodType>(dataSchema: T) => z.strictObject({ data: dataSchema });
-export const healthSchema = z.strictObject({ status: z.literal('ok'), service: z.literal('learning-companion-api') });
-export const healthEnvelopeSchema = successEnvelopeSchema(healthSchema);
+// Cloud Run health check body: {"status":"ok"} (no envelope).
+export const healthSchema = z.strictObject({ status: z.literal('ok') });
 export type ApiErrorCode = typeof ERROR_CODES[number];
 export type ErrorEnvelope = z.infer<typeof errorEnvelopeSchema>;
 export type SuccessEnvelope<T> = { data: T };

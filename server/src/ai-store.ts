@@ -1,4 +1,5 @@
-import { Pool, type PoolClient } from 'pg';
+import type { Pool, PoolClient } from 'pg';
+import { closePools, sharedPool } from './db.js';
 import { AiOperationError, type AiStore, type OperationRecord, type SmokeOutput } from './ai.js';
 
 const kind = 'stage5_source_smoke';
@@ -38,8 +39,7 @@ export async function reserveCall(db: PoolClient, ownerId: string, isAnonymous: 
 
 export function createPgAiStore(databaseUrl = process.env.DATABASE_URL?.trim()) {
   if (!databaseUrl) throw new AiOperationError('CONFIGURATION', 'DATABASE_URL is required for AI operation persistence.');
-  // Local development's provider-managed chain is absent from this Windows host's trust store.
-  const pool = new Pool({ connectionString: databaseUrl, ssl: { rejectUnauthorized: false }, max: 3 });
+  const pool = sharedPool(databaseUrl);
   const store: AiStore = {
     async reserve({ ownerId, isAnonymous, requestId, inputHash }) {
       return transaction(pool, async db => {
@@ -94,5 +94,5 @@ export function createPgAiStore(databaseUrl = process.env.DATABASE_URL?.trim()) 
         where id=$1 and operation_kind=$4 and state='pending'`, [operationId, state, reason, kind]);
     },
   };
-  return { store, close: () => pool.end() };
+  return { store, close: () => closePools() };
 }

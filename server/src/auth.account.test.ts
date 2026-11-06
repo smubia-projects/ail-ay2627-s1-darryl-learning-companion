@@ -1,15 +1,8 @@
-import { expect, it, vi } from 'vitest';
-import { createClient } from '@supabase/supabase-js';
+import { expect, it } from 'vitest';
 import { createProfileService } from './auth.js';
 
-vi.mock('@supabase/supabase-js', () => ({ createClient: vi.fn() }));
-
-it('rejects an anonymous token before querying private profiles', async () => {
-  const from = vi.fn();
-  vi.mocked(createClient).mockReturnValue({ auth: { getUser: vi.fn().mockResolvedValue({
-    data: { user: { id: 'old-guest', is_anonymous: true } }, error: null,
-  }) }, from } as unknown as ReturnType<typeof createClient>);
-  const service = createProfileService('https://example.supabase.co', 'public-key');
+it('rejects a malformed visitor ID before querying profiles', async () => {
+  // The pool connects lazily, so an invalid ID must fail without touching the database.
+  const service = createProfileService('postgresql://unused:unused@127.0.0.1:1/unused');
   await expect(service.getProfile('guest-token')).rejects.toMatchObject({ status: 401, code: 'UNAUTHENTICATED' });
-  expect(from).not.toHaveBeenCalled();
 });

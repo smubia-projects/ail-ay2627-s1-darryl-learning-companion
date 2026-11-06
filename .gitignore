@@ -1,8 +1,5 @@
 node_modules/
 .npm-cache/
-.supabase-home/
-/supabase/.branches/
-/supabase/.temp/
 dist/
 coverage/
 playwright-report/
