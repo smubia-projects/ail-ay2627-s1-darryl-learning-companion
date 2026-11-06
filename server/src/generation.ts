@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { GoogleGenAI, Type, type Schema } from '@google/genai';
 import { Pool } from 'pg';
 import { z } from 'zod';
 import { assessmentRoundSchema, submitAnswerResponseSchema, diagramSchema, lessonSchema, lessonStepSchema, mcqSchema,
   type AssessmentRound, type Lesson, type Profile } from '@learning-companion/shared';
 import { AiOperationError } from './ai.js';
+import { chatJson, openRouterModel, type JsonSchema } from './openrouter.js';
 import { reserveCall, transaction } from './ai-store.js';
 import { detailedExplanationSchema, lessonContentInstructions } from './lesson-content.js';
 
@@ -35,46 +35,39 @@ export type GenerationService = {
   close(): Promise<void>;
 };
 
-// Response schema constrains Gemini's JSON shape; Zod and business rules below remain authoritative.
-const string = { type: Type.STRING };
-const stringArray = { type: Type.ARRAY, items: string };
-const node = { type: Type.OBJECT, properties: { id: string, label: string, description: string, example: string,
-  icon: { type: Type.STRING, enum: ['client', 'server', 'api', 'database', 'table', 'json', 'security', 'mobile', 'web', 'exchange', 'generic'] },
+// JSON Schema constrains the model's output shape; Zod and business rules below remain authoritative.
+const string = { type: 'string' };
+const stringArray = { type: 'array', items: string };
+const node = { type: 'object', properties: { id: string, label: string, description: string, example: string,
+  icon: { type: 'string', enum: ['client', 'server', 'api', 'database', 'table', 'json', 'security', 'mobile', 'web', 'exchange', 'generic'] },
 }, required: ['id', 'label', 'description', 'example', 'icon'] };
-const edge = { type: Type.OBJECT, properties: { id: string, from: string, to: string, label: string }, required: ['id', 'from', 'to', 'label'] };
-const diagram = { type: Type.OBJECT, properties: { id: string, title: string,
-  type: { type: Type.STRING, enum: ['flow', 'relationship', 'table'] },
-  nodes: { type: Type.ARRAY, items: node }, edges: { type: Type.ARRAY, items: edge },
-  table: { type: Type.OBJECT, properties: { columns: stringArray, rows: { type: Type.ARRAY, items: stringArray } }, required: ['columns', 'rows'] },
+const edge = { type: 'object', properties: { id: string, from: string, to: string, label: string }, required: ['id', 'from', 'to', 'label'] };
+const diagram = { type: 'object', properties: { id: string, title: string,
+  type: { type: 'string', enum: ['flow', 'relationship', 'table'] },
+  nodes: { type: 'array', items: node }, edges: { type: 'array', items: edge },
+  table: { type: 'object', properties: { columns: stringArray, rows: { type: 'array', items: stringArray } }, required: ['columns', 'rows'] },
 }, required: ['id', 'title', 'type', 'nodes', 'edges'] };
-const step = { type: Type.OBJECT, properties: { id: string, heading: string, caption: string,
+const step = { type: 'object', properties: { id: string, heading: string, caption: string,
   explanation: string, workedExample: string, commonMistake: string,
   diagramId: string, highlightNodeIds: stringArray, highlightEdgeIds: stringArray, citationChunkIds: stringArray,
-  highlightRowIndexes: { type: Type.ARRAY, items: { type: Type.INTEGER } },
+  highlightRowIndexes: { type: 'array', items: { type: 'integer' } },
 }, required: ['id', 'heading', 'caption', 'explanation', 'workedExample', 'commonMistake', 'diagramId', 'highlightNodeIds', 'highlightEdgeIds', 'highlightRowIndexes', 'citationChunkIds'] };
-const question = { type: Type.OBJECT, properties: { id: string, familyId: string, prompt: string,
-  kind: { type: Type.STRING, enum: ['recall', 'application'] }, objectiveIds: stringArray, citationChunkIds: stringArray,
-  options: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: string, text: string }, required: ['id', 'text'] } },
+const question = { type: 'object', properties: { id: string, familyId: string, prompt: string,
+  kind: { type: 'string', enum: ['recall', 'application'] }, objectiveIds: stringArray, citationChunkIds: stringArray,
+  options: { type: 'array', items: { type: 'object', properties: { id: string, text: string }, required: ['id', 'text'] } },
   correctOptionId: string, feedbackCriteria: string,
 }, required: ['id', 'familyId', 'prompt', 'kind', 'objectiveIds', 'citationChunkIds', 'options', 'correctOptionId', 'feedbackCriteria'] };
-const generationResponseSchema = { type: Type.OBJECT, properties: { title: string, runningExample: string,
-  diagrams: { type: Type.ARRAY, items: diagram }, steps: { type: Type.ARRAY, items: step },
-  questions: { type: Type.ARRAY, items: question },
+const generationResponseSchema = { type: 'object', properties: { title: string, runningExample: string,
+  diagrams: { type: 'array', items: diagram }, steps: { type: 'array', items: step },
+  questions: { type: 'array', items: question },
 }, required: ['title', 'runningExample', 'diagrams', 'steps', 'questions'] };
 
-export function createGenerationProvider(apiKey = process.env.GEMINI_API_KEY?.trim(), model = process.env.GEMINI_MODEL?.trim(), responseSchema: Schema = generationResponseSchema): GenerateProvider {
-  if (!apiKey || !model) throw new AiOperationError('CONFIGURATION', 'Gemini is not configured.');
-  const ai = new GoogleGenAI({ apiKey });
-  return async prompt => {
-    const response = await ai.models.generateContent({ model, contents: prompt, config: {
-      responseMimeType: 'application/json', responseSchema,
-      maxOutputTokens: 9000, abortSignal: AbortSignal.timeout(60_000),
-      httpOptions: { timeout: 60_000, retryOptions: { attempts: 1 } },
-    } });
-    if (response.promptFeedback?.blockReason || response.candidates?.[0]?.finishReason === 'SAFETY' || !response.text)
-      throw new AiOperationError('REFUSAL', 'Gemini did not return usable content.');
-    return response.text;
-  };
+export function createGenerationProvider(model = openRouterModel(), responseSchema: JsonSchema = generationResponseSchema,
+  schemaName = 'lesson'): GenerateProvider {
+  if (!(process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim()) throw new AiOperationError('CONFIGURATION', 'OpenRouter is not configured.');
+  // One lesson call can take a while; two attempts stay inside the 300 s Cloud Run request timeout.
+  return prompt => chatJson({ prompt, model, maxTokens: 9000, timeoutMs: 120_000,
+    schema: { name: schemaName, schema: responseSchema } });
 }
 
 export function validateGenerated(raw: unknown, input: GenerationInput, lessonId = randomUUID(), roundId = randomUUID()) {

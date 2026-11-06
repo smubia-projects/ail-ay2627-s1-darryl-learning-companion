@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { GoogleGenAI, Type } from '@google/genai';
 import { z } from 'zod';
+import { chat, openRouterModel } from './openrouter.js';
 
 const id = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 const uuid = z.uuid();
@@ -21,21 +21,21 @@ const smokeOutputSchema = z.strictObject({
 export type SmokeOutput = z.infer<typeof smokeOutputSchema>;
 
 export const smokeResponseSchema = {
-  type: Type.OBJECT,
+  type: 'object',
   properties: {
-    lesson: { type: Type.OBJECT, properties: {
-      title: { type: Type.STRING },
-      steps: { type: Type.ARRAY, minItems: '4', maxItems: '4', items: { type: Type.OBJECT, properties: {
-        heading: { type: Type.STRING }, body: { type: Type.STRING },
-        citationChunkIds: { type: Type.ARRAY, minItems: '1', maxItems: '3', items: { type: Type.STRING } },
+    lesson: { type: 'object', properties: {
+      title: { type: 'string' },
+      steps: { type: 'array', minItems: 4, maxItems: 4, items: { type: 'object', properties: {
+        heading: { type: 'string' }, body: { type: 'string' },
+        citationChunkIds: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'string' } },
       }, required: ['heading', 'body', 'citationChunkIds'] } },
     }, required: ['title', 'steps'] },
-    questions: { type: Type.ARRAY, minItems: '3', maxItems: '3', items: { type: Type.OBJECT, properties: {
-      id: { type: Type.STRING }, prompt: { type: Type.STRING }, kind: { type: Type.STRING, enum: ['recall', 'application'] },
-      objectiveId: { type: Type.STRING }, citationChunkIds: { type: Type.ARRAY, minItems: '1', maxItems: '3', items: { type: Type.STRING } },
-      options: { type: Type.ARRAY, minItems: '4', maxItems: '4', items: { type: Type.OBJECT, properties: {
-        id: { type: Type.STRING }, text: { type: Type.STRING },
-      }, required: ['id', 'text'] } }, correctOptionId: { type: Type.STRING }, feedbackCriteria: { type: Type.STRING },
+    questions: { type: 'array', minItems: 3, maxItems: 3, items: { type: 'object', properties: {
+      id: { type: 'string' }, prompt: { type: 'string' }, kind: { type: 'string', enum: ['recall', 'application'] },
+      objectiveId: { type: 'string' }, citationChunkIds: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'string' } },
+      options: { type: 'array', minItems: 4, maxItems: 4, items: { type: 'object', properties: {
+        id: { type: 'string' }, text: { type: 'string' },
+      }, required: ['id', 'text'] } }, correctOptionId: { type: 'string' }, feedbackCriteria: { type: 'string' },
     }, required: ['id', 'prompt', 'kind', 'objectiveId', 'citationChunkIds', 'options', 'correctOptionId', 'feedbackCriteria'] } },
   }, required: ['lesson', 'questions'],
 };
@@ -60,20 +60,14 @@ export class AiOperationError extends Error {
     | 'REFUSAL' | 'TIMEOUT' | 'INVALID_OUTPUT' | 'PROVIDER_FAILURE', message: string) { super(message); }
 }
 
-export function createGeminiProvider(apiKey = process.env.GEMINI_API_KEY?.trim(), model = process.env.GEMINI_MODEL?.trim()): AiProvider {
-  if (!apiKey || !model) throw new AiOperationError('CONFIGURATION', 'Gemini key and model are required.');
-  const ai = new GoogleGenAI({ apiKey });
+export function createOpenRouterProvider(model = openRouterModel()): AiProvider {
+  if (!(process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim()) throw new AiOperationError('CONFIGURATION', 'OpenRouter key is required.');
   return {
     async generate(prompt, maxOutputTokens, timeoutMs) {
-      const response = await ai.models.generateContent({ model, contents: prompt, config: {
-        responseMimeType: 'application/json', responseSchema: smokeResponseSchema,
-        maxOutputTokens, abortSignal: AbortSignal.timeout(timeoutMs),
-        httpOptions: { timeout: timeoutMs, retryOptions: { attempts: 1 } },
-      } });
-      return { text: response.text, finishReason: response.candidates?.[0]?.finishReason,
-        blocked: Boolean(response.promptFeedback?.blockReason),
-        usage: { promptTokens: response.usageMetadata?.promptTokenCount,
-          outputTokens: response.usageMetadata?.candidatesTokenCount } };
+      const response = await chat({ prompt, model, maxTokens: maxOutputTokens, timeoutMs,
+        schema: { name: 'smoke_lesson', schema: smokeResponseSchema } });
+      return { text: response.text || undefined, finishReason: response.finishReason,
+        usage: response.usage };
     },
   };
 }
@@ -132,21 +126,22 @@ export async function runSmoke(input: SmokeInput, store: AiStore, provider: AiPr
       try { response = await provider.generate(promptFor(input, attempt ? lastError : undefined), options.maxOutputTokens, options.timeoutMs); }
       catch (error) {
         if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError' || /timed out|timeout/i.test(error.message)))
-          throw new AiOperationError('TIMEOUT', 'Gemini request timed out; outcome may be uncertain.');
-        throw new AiOperationError('PROVIDER_FAILURE', 'Gemini request failed.');
+          throw new AiOperationError('TIMEOUT', 'Model request timed out; outcome may be uncertain.');
+        if (error instanceof AiOperationError) throw error;
+        throw new AiOperationError('PROVIDER_FAILURE', 'Model request failed.');
       }
-      if (response.blocked || response.finishReason === 'SAFETY' || !response.text) throw new AiOperationError('REFUSAL', 'Gemini did not return usable content.');
+      if (response.blocked || response.finishReason === 'content_filter' || !response.text) throw new AiOperationError('REFUSAL', 'The model did not return usable content.');
       try {
         const output = validateSmokeOutput(JSON.parse(response.text), input);
         await store.complete(reservation.record.id, output, { calls, elapsedMs: Date.now() - started,
-          model: process.env.GEMINI_MODEL, promptTokens: response.usage?.promptTokens, outputTokens: response.usage?.outputTokens });
+          model: openRouterModel(), promptTokens: response.usage?.promptTokens, outputTokens: response.usage?.outputTokens });
         return { output, reused: false, repaired: attempt === 1, usage: response.usage, elapsedMs: Date.now() - started };
       } catch (error) {
         if (!(error instanceof SyntaxError) && !(error instanceof AiOperationError && error.code === 'INVALID_OUTPUT')) throw error;
         lastError = error instanceof SyntaxError ? 'malformed JSON' : (error as Error).message;
       }
     }
-    throw new AiOperationError('INVALID_OUTPUT', `Gemini output remained invalid after one repair: ${lastError}`);
+    throw new AiOperationError('INVALID_OUTPUT', `Model output remained invalid after one repair: ${lastError}`);
   } catch (error) {
     const code = error instanceof AiOperationError ? error.code : 'PROVIDER_FAILURE';
     await store.fail(reservation.record.id, code === 'TIMEOUT' ? 'uncertain' : 'failed', code);
