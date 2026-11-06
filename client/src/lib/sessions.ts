@@ -1,7 +1,7 @@
-import { assessmentRoundSchema, errorEnvelopeSchema, hintResponseSchema, lessonSchema, submitAnswerResponseSchema,
+import { assessmentRoundSchema, hintResponseSchema, lessonSchema, submitAnswerResponseSchema,
   tutorHistorySchema, tutorReplySchema, type SubmitAnswerResponse, type TutorRequest } from '@learning-companion/shared';
 import { z } from 'zod';
-import { getSupabaseClient } from '@/auth/supabase';
+import { apiRequest } from '@/lib/api';
 
 const savedSessionSchema = z.strictObject({
   id: z.uuid(), conceptId: z.uuid(), generationState: z.literal('ready'),
@@ -13,26 +13,13 @@ const savedSessionSchema = z.strictObject({
 });
 export type SavedLessonSession = z.infer<typeof savedSessionSchema>;
 
-async function sessionRequest(path: string, init?: RequestInit, timeout = 10_000): Promise<unknown> {
-  const client = getSupabaseClient();
-  const { data: { session } } = await client?.auth.getSession() ?? { data: { session: null } };
-  if (!session) throw new Error('Your session could not be restored. Please sign in again.');
-  const response = await fetch(`/api${path}`, {
-    ...init, headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json', ...init?.headers },
-    signal: AbortSignal.timeout(timeout),
-  });
-  const body: unknown = await response.json();
-  if (!response.ok) {
-    const parsed = errorEnvelopeSchema.safeParse(body);
-    throw new Error(parsed.success ? parsed.data.error.message : 'Could not load this lesson. Please try again.');
-  }
-  return (body as { data: unknown }).data;
-}
+const sessionRequest = (path: string, init?: RequestInit, timeout = 10_000): Promise<unknown> =>
+  apiRequest(path, init, timeout, 'Could not load this lesson. Please try again.');
 
 export const startLesson = async (conceptId: string, requestId: string): Promise<SavedLessonSession> =>
   savedSessionSchema.parse(await sessionRequest('/sessions', {
     method: 'POST', body: JSON.stringify({ conceptId, mode: 'learn', requestId }),
-  }, 140_000));
+  }, 310_000)); // a new lesson can take a few minutes; the API allows up to 300 s
 export const fetchLesson = async (id: string): Promise<SavedLessonSession> =>
   savedSessionSchema.parse(await sessionRequest(`/sessions/${id}`));
 export const fetchTutorHistory = async (id: string, before?: number) =>

@@ -1,116 +1,56 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Profile } from '@learning-companion/shared';
-import { fetchProfile, getSupabaseClient } from './supabase.js';
+import { meEnvelopeSchema, type Profile } from '@learning-companion/shared';
+import { apiRequest, getVisitorId, resetVisitorId } from '@/lib/api';
 
-// Identity snapshot only. Access tokens remain in the Supabase client, never Context.
+// Public demo: no sign-in. Each browser is an anonymous visitor identified by a random ID
+// in localStorage; the API keeps that visitor's onboarding, lessons and progress.
 export type SessionIdentity = { userId: string; isAnonymous: boolean; displayName: string };
 type SessionContextValue = {
   session: SessionIdentity | null;
   profile: Profile | null;
-  status: 'loading' | 'ready' | 'unconfigured';
+  status: 'loading' | 'ready' | 'unavailable';
   refreshProfile: () => Promise<Profile>;
-  signInWithGoogle: () => Promise<void>;
-  finishGoogleSignIn: (code: string) => Promise<Profile>;
-  signOut: () => Promise<void>;
-  replaceSession: (session: SessionIdentity | null) => void;
+  /** Forget this browser's progress and start again as a new visitor. */
+  startOver: () => Promise<void>;
 };
 const SessionContext = createContext<SessionContextValue | null>(null);
 
-export function SessionProvider({ children, client = getSupabaseClient(), loadProfile = fetchProfile }: {
+export const fetchProfile = async (): Promise<Profile> =>
+  meEnvelopeSchema.parse({ data: await apiRequest('/me', {}, 15_000, 'Could not start your learning session.') }).data;
+
+export function SessionProvider({ children, loadProfile = fetchProfile }: {
   children: ReactNode;
-  client?: SupabaseClient | null;
-  loadProfile?: (accessToken: string) => Promise<Profile>;
+  loadProfile?: () => Promise<Profile>;
 }) {
   const queryClient = useQueryClient();
-  const [session, setSession] = useState<SessionIdentity | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [status, setStatus] = useState<'loading' | 'ready' | 'unconfigured'>('loading');
-  const identityRef = useRef<string | null>(null);
-  const replaceSession = useCallback((nextSession: SessionIdentity | null) => {
-    const nextIdentity = nextSession?.userId ?? null;
-    if (identityRef.current !== nextIdentity) queryClient.clear();
-    identityRef.current = nextIdentity;
-    setSession(nextSession);
-    setProfile(null);
-  }, [queryClient]);
-  const applyVerifiedProfile = useCallback((verified: Profile, displayName: string) => {
-    replaceSession({ userId: verified.userId, isAnonymous: verified.isAnonymous, displayName });
-    setProfile(verified);
-  }, [replaceSession]);
-  const verifyStoredSession = useCallback(async (accessToken: string) => {
-    if (!client) throw new Error('Sign-in is unavailable.');
-    const { data: { user }, error: authError } = await client.auth.getUser(accessToken);
-    if (authError || !user || user.is_anonymous) throw new Error('Sign in with Google to continue.');
-    const verified = await loadProfile(accessToken);
-    if (verified.userId !== user.id || verified.isAnonymous) {
-      throw new Error('Profile and session identities do not match.');
-    }
-    const name = [user.user_metadata?.full_name, user.user_metadata?.name]
-      .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
-    applyVerifiedProfile(verified, name?.trim().replace(/\s+/g, ' ').slice(0, 80) || 'My learning');
-    return verified;
-  }, [applyVerifiedProfile, client, loadProfile]);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'unavailable'>('loading');
+  const refreshProfile = useCallback(async () => {
+    getVisitorId();
+    const loaded = await loadProfile();
+    setProfile(loaded);
+    return loaded;
+  }, [loadProfile]);
   useEffect(() => {
     let active = true;
-    if (window.location.pathname === '/auth/callback') {
-      queueMicrotask(() => { if (active) setStatus('ready'); });
-      return () => { active = false; };
-    }
-    if (!client) {
-      queueMicrotask(() => { if (active) setStatus('unconfigured'); });
-      return () => { active = false; };
-    }
-    void (async () => {
-      try {
-        const { data: { session: stored }, error: sessionError } = await client.auth.getSession();
-        if (sessionError) throw sessionError;
-        if (stored) await verifyStoredSession(stored.access_token);
-      } catch {
-        if (active) {
-          replaceSession(null);
-        }
-      } finally {
-        if (active) setStatus('ready');
-      }
-    })();
+    getVisitorId();
+    loadProfile().then(loaded => { if (active) { setProfile(loaded); setStatus('ready'); } })
+      .catch(() => { if (active) setStatus('unavailable'); });
     return () => { active = false; };
-  }, [client, replaceSession, verifyStoredSession]);
-  useEffect(() => {
-    if (!client) return;
-    const { data: { subscription } } = client.auth.onAuthStateChange(event => {
-      if (event === 'SIGNED_OUT') replaceSession(null);
-    });
-    return () => subscription.unsubscribe();
-  }, [client, replaceSession]);
-  const refreshProfile = useCallback(async () => {
-    if (!client) throw new Error('No account session.');
-    const { data: { session: stored } } = await client.auth.getSession();
-    if (!stored) throw new Error('No account session.');
-    return verifyStoredSession(stored.access_token);
-  }, [client, verifyStoredSession]);
-  const signInWithGoogle = useCallback(async () => {
-    if (!client) throw new Error('Sign-in is unavailable.');
-    const { error } = await client.auth.signInWithOAuth({
-      provider: 'google', options: { redirectTo: `${window.location.origin}/auth/callback` },
-    });
-    if (error) throw error;
-  }, [client]);
-  const finishGoogleSignIn = useCallback(async (code: string) => {
-    if (!client) throw new Error('Sign-in is unavailable.');
-    const { data, error } = await client.auth.exchangeCodeForSession(code);
-    if (error || !data.session) throw error ?? new Error('Sign-in could not be completed.');
-    return verifyStoredSession(data.session.access_token);
-  }, [client, verifyStoredSession]);
-  const signOut = useCallback(async () => {
-    if (!client) throw new Error('Sign-out is unavailable.');
-    const { error } = await client.auth.signOut({ scope: 'local' });
-    if (error) throw error;
-    replaceSession(null);
-  }, [client, replaceSession]);
-  const value = useMemo(() => ({ session, profile, status, refreshProfile, signInWithGoogle, finishGoogleSignIn, signOut, replaceSession }),
-    [session, profile, status, refreshProfile, signInWithGoogle, finishGoogleSignIn, signOut, replaceSession]);
+  }, [loadProfile]);
+  const startOver = useCallback(async () => {
+    resetVisitorId();
+    queryClient.clear();
+    setProfile(null);
+    setStatus('loading');
+    try { await refreshProfile(); setStatus('ready'); }
+    catch { setStatus('unavailable'); }
+  }, [queryClient, refreshProfile]);
+  const session = useMemo<SessionIdentity | null>(() => profile
+    ? { userId: profile.userId, isAnonymous: true, displayName: 'Guest learner' } : null, [profile]);
+  const value = useMemo(() => ({ session, profile, status, refreshProfile, startOver }),
+    [session, profile, status, refreshProfile, startOver]);
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
 

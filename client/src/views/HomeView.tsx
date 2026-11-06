@@ -8,6 +8,7 @@ import { discoverTopicSources, fetchHome, fetchTopics, suggestTopics, type Conce
 import ContributionSkyline from '@/components/ui/contribution-skyline';
 import { ButtonUi, ButtonUiLink } from '@/components/ui/button-ui';
 import { startLesson } from '@/lib/sessions';
+import { handledByGate } from '@/lib/api';
 
 const areaNames: Record<string, string> = { web_communication: 'WEB COMMUNICATION', apis: 'APIs', databases: 'DATABASES' };
 const skillBranches = [
@@ -52,10 +53,11 @@ function LessonAction({ concept }: { concept: ConceptChoice }) {
       const saved = await startLesson(concept.id, requestId.current);
       void queryClient.invalidateQueries({ queryKey: ['home'] });
       navigate(`/learn/${saved.id}`);
-    } catch { setError(true); }
+    } catch (caught) { if (!handledByGate(caught)) setError(true); }
     finally { setStarting(false); }
   }
   return <div className="skill-lesson-action"><ButtonUi disabled={starting} onClick={() => { void start(); }}>{starting ? 'Preparing lesson…' : 'Start lesson'}</ButtonUi>
+    {starting && <p role="status" className="skill-lesson-progress">Writing a new lesson can take a few minutes. Please keep this tab open.</p>}
     {error && <p role="alert">Could not prepare your lesson. <ButtonUi variant="quiet" size="small" onClick={() => { void start(); }}>Try again</ButtonUi></p>}
   </div>;
 }
@@ -78,11 +80,12 @@ function SuggestedLessonAction({ topic }: { topic: SavedTopicNode }) {
       void queryClient.invalidateQueries({ queryKey: ['home'] });
       navigate(`/learn/${saved.id}`);
     }
-    catch { setError(true); }
+    catch (caught) { if (!handledByGate(caught)) setError(true); }
     finally { setPhase(null); }
   }
   return <div className="skill-lesson-action">
     <ButtonUi disabled={phase !== null} onClick={() => { void learn(); }}>{phase === 'sources' ? 'Finding sources…' : phase === 'lesson' ? 'Preparing lesson…' : 'Learn'}</ButtonUi>
+    {phase !== null && <p role="status" className="skill-lesson-progress">Finding sources and writing a new lesson can take a few minutes. Please keep this tab open.</p>}
     {error && <p role="alert">Could not prepare this lesson. <ButtonUi variant="quiet" size="small" onClick={() => { void learn(); }}>Try again</ButtonUi></p>}
   </div>;
 }
@@ -199,7 +202,8 @@ function SkillTree({ concepts, topics }: { concepts: ConceptChoice[]; topics: Sa
       const uncertain = error instanceof TypeError || error instanceof DOMException
         && (error.name === 'TimeoutError' || error.name === 'AbortError');
       if (!uncertain && pendingSuggestion.current?.id === requestId) pendingSuggestion.current = null;
-      if (sequence === expansionSequence.current) setSuggestionError(true);
+      if (sequence === expansionSequence.current && !handledByGate(error)) setSuggestionError(true);
+      if (sequence === expansionSequence.current && handledByGate(error)) closeExpansion();
     }
     finally { if (sequence === expansionSequence.current) setSuggesting(false); }
   };
