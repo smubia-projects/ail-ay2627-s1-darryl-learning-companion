@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test';
 test('student landing omits diagnostics while the API proxy is checked independently', async ({ page, request }, testInfo) => {
   const health = await request.get('/api/health');
   expect(health.ok()).toBe(true);
-  expect(await health.json()).toEqual({ data: { status: 'ok', service: 'learning-companion-api' } });
+  expect(await health.json()).toEqual({ status: 'ok' });
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Connect concepts. Build understanding.' })).toBeVisible();
   await expect(page.getByText(/project foundation|local connection|API connected|check connection|later stages/i)).toHaveCount(0);
