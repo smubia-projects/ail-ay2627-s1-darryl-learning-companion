@@ -5,7 +5,7 @@ export const PROJECT_CTA = {
   accentColor: '#315e53',
   headline: "You've been busy learning!",
   description:
-    'This demo prepared {count} AI lessons and answers for you. Want to keep exploring without limits? Join us and build projects like this.',
+    'Want to build AI that helps students pick their next topic and check it actually stuck? Bring an idea to AI Lodge and leave with a live app, the teammates who built it and something real for your portfolio.',
   programme: 'AI Lodge',
   programmeLink: 'https://www.smubia.com/ailodge',
   githubLink: 'https://github.com/smubia-projects/ail-ay2627-s1-darryl-learning-companion',
