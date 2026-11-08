@@ -154,7 +154,7 @@ export function createTopicSuggestionService(
   search?: (title: string, objective: string, excluded: string[]) => Promise<string[]>,
 ): TopicSuggestionService {
   const pool = databaseUrl ? sharedPool(databaseUrl) : null;
-  const call = generate ?? ((prompt: string) => chatJson({ prompt, model: openRouterModel(), maxTokens: 1000, timeoutMs: 30_000,
+  const call = generate ?? ((prompt: string) => chatJson({ prompt, model: openRouterModel(), maxTokens: 1000, timeoutMs: 180_000,
     schema: { name: 'topic_suggestions', schema: { type: 'object', properties: {
       topics: { type: 'array', items: { type: 'object',
         properties: { title: { type: 'string' }, objective: { type: 'string' }, parentRef: { type: 'string' } },

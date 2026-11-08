@@ -6,7 +6,7 @@ import { assessmentRoundSchema, submitAnswerResponseSchema, diagramSchema, lesso
 import { AiOperationError } from './ai.js';
 import { chatJson, openRouterModel, type JsonSchema } from './openrouter.js';
 import { reserveCall, transaction } from './ai-store.js';
-import { detailedExplanationSchema, lessonContentInstructions } from './lesson-content.js';
+import { lessonContentInstructions } from './lesson-content.js';
 
 const uuid = z.uuid();
 const objectiveSchema = z.strictObject({ id: z.string().min(1), description: z.string().min(1) });
@@ -15,11 +15,85 @@ const generatedQuestionSchema = mcqSchema.extend({
 });
 const generatedSchema = z.strictObject({
   title: z.string().trim().min(1).max(120),
-  runningExample: z.string().trim().min(30).max(300),
+  runningExample: z.string().trim().min(10).max(300),
   diagrams: z.array(diagramSchema).min(1).max(2),
-  steps: z.array(lessonStepSchema.extend({ explanation: detailedExplanationSchema })).min(4).max(6),
+  steps: z.array(lessonStepSchema).min(4).max(6),
   questions: z.array(generatedQuestionSchema).length(3),
 });
+
+/** "steps.2.caption: Captions must contain at most 100 words." for the first few zod issues (logs + repair prompt). */
+export function describeIssues(error: z.ZodError, max = 6) {
+  return error.issues.slice(0, max).map(issue => `${issue.path.join('.') || 'root'}: ${issue.message}`).join('; ');
+}
+
+// Clamp what models most often overshoot (label/example lengths, caption words, array counts, stray keys, highlights
+// that point at parts the diagram doesn't have), so a long label doesn't throw away a whole lesson. The limits that
+// matter (citations, objectives, question keys) are still checked strictly in validateGenerated.
+type Obj = Record<string, unknown>;
+const obj = (v: unknown): Obj => (v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {});
+const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+const clip = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max).trim() : v);
+const words = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().split(/\s+/u).slice(0, max).join(' ') : v);
+const cid = (v: unknown) => (typeof v === 'string' || typeof v === 'number'
+  ? String(v).trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 100) : v);
+const uniq = <T>(values: T[]) => [...new Set(values)];
+const icons = new Set(['client', 'server', 'api', 'database', 'table', 'json', 'security', 'mobile', 'web', 'exchange', 'generic']);
+type NDiagram = { id: unknown; type: unknown; nodes: { id: unknown }[]; edges: { id: unknown }[]; table?: { columns: unknown[]; rows: unknown[] } };
+
+export function normalizeGenerated(raw: unknown): unknown {
+  const r = obj(raw);
+  const diagrams = arr(r.diagrams).slice(0, 2).map((value): NDiagram & Obj => {
+    const d = obj(value);
+    const base = { id: cid(d.id), title: clip(d.title, 500), type: d.type };
+    if (d.type === 'table') {
+      const t = obj(d.table);
+      const columns = arr(t.columns).slice(0, 8).map(c => clip(c, 500));
+      const rows = arr(t.rows).slice(0, 20).map(row => {
+        const cells = arr(row).slice(0, columns.length).map(c => clip(typeof c === 'number' ? String(c) : c, 500));
+        while (cells.length < columns.length) cells.push('-');
+        return cells;
+      });
+      return { ...base, nodes: [], edges: [], table: { columns, rows } };
+    }
+    const nodes = arr(d.nodes).slice(0, 8).map(value => {
+      const n = obj(value);
+      return { id: cid(n.id), label: clip(n.label, 50), description: clip(n.description, 3000), example: clip(n.example, 200),
+        ...(typeof n.icon === 'string' && icons.has(n.icon) ? { icon: n.icon } : {}) };
+    });
+    const ids = new Set(nodes.map(n => n.id));
+    const edges = arr(d.edges).map(value => {
+      const e = obj(value);
+      return { id: cid(e.id), from: cid(e.from), to: cid(e.to), label: clip(e.label, 60) };
+    }).filter(e => ids.has(e.from) && ids.has(e.to) && e.from !== e.to).slice(0, 24);
+    const linked = nodes.filter(n => edges.some(e => e.from === n.id || e.to === n.id));
+    return { ...base, nodes: linked.length >= 2 ? linked : nodes, edges };
+  });
+  const steps = arr(r.steps).slice(0, 6).map(value => {
+    const st = obj(value);
+    const diagramId = cid(st.diagramId);
+    const diagram = diagrams.find(d => d.id === diagramId) ?? diagrams[0];
+    const isTable = diagram?.type === 'table';
+    const rowCount = isTable ? diagram?.table?.rows.length ?? 0 : 0;
+    let nodeIds = isTable ? [] : uniq(arr(st.highlightNodeIds).map(cid)).filter(id => diagram?.nodes.some(n => n.id === id)).slice(0, 8);
+    const edgeIds = isTable ? [] : uniq(arr(st.highlightEdgeIds).map(cid)).filter(id => diagram?.edges.some(e => e.id === id)).slice(0, 24);
+    let rowIndexes = isTable ? uniq(arr(st.highlightRowIndexes).map(Number))
+      .filter(i => Number.isInteger(i) && i >= 0 && i < rowCount).slice(0, 20) : [];
+    if (isTable && !rowIndexes.length && rowCount) rowIndexes = [0];
+    if (!isTable && !nodeIds.length && !edgeIds.length && diagram?.nodes[0]) nodeIds = [diagram.nodes[0].id];
+    return { id: cid(st.id), heading: clip(st.heading, 500), caption: words(clip(st.caption, 3000), 100),
+      explanation: clip(st.explanation, 2400), workedExample: clip(st.workedExample, 1200), commonMistake: clip(st.commonMistake, 800),
+      diagramId: diagram?.id ?? diagramId, highlightNodeIds: nodeIds, highlightEdgeIds: edgeIds, highlightRowIndexes: rowIndexes,
+      citationChunkIds: uniq(arr(st.citationChunkIds)).slice(0, 6) };
+  });
+  const questions = arr(r.questions).map(value => {
+    const q = obj(value);
+    return { id: cid(q.id), familyId: cid(q.familyId ?? q.id), prompt: clip(q.prompt, 3000), kind: q.kind,
+      objectiveIds: uniq(arr(q.objectiveIds).map(cid)).slice(0, 12), citationChunkIds: uniq(arr(q.citationChunkIds)).slice(0, 6),
+      options: arr(q.options).slice(0, 6).map(value => { const o = obj(value); return { id: cid(o.id), text: clip(o.text, 500) }; }),
+      correctOptionId: cid(q.correctOptionId), feedbackCriteria: clip(q.feedbackCriteria, 1200) };
+  });
+  return { title: clip(r.title, 120), runningExample: clip(r.runningExample, 300), diagrams, steps, questions };
+}
 export type Generated = z.infer<typeof generatedSchema>;
 export type Passage = { id: string; heading: string; body: string; sourceUrl: string; objectiveId: string };
 export type GenerationInput = { conceptId: string; title: string; objectives: z.infer<typeof objectiveSchema>[];
@@ -73,8 +147,8 @@ export function createGenerationProvider(model = openRouterModel(), responseSche
 }
 
 export function validateGenerated(raw: unknown, input: GenerationInput, lessonId = randomUUID(), roundId = randomUUID()) {
-  const result = generatedSchema.safeParse(raw);
-  if (!result.success) throw new AiOperationError('INVALID_OUTPUT', 'Generated lesson has invalid structure.');
+  const result = generatedSchema.safeParse(normalizeGenerated(raw));
+  if (!result.success) throw new AiOperationError('INVALID_OUTPUT', `Generated lesson has invalid structure: ${describeIssues(result.error)}`);
   const generated = result.data;
   const objectiveIds = new Set(input.objectives.map(objective => objective.id));
   const cited = new Set(input.passages.map(passage => passage.id));
@@ -135,8 +209,9 @@ export async function generateValidated(input: GenerationInput, provider: Genera
     catch (error) {
       if (error instanceof SyntaxError) lastError = 'malformed JSON';
       else if (error instanceof AiOperationError && error.code === 'INVALID_OUTPUT') lastError = error.message;
-      else if (error instanceof z.ZodError) lastError = 'invalid lesson fields';
+      else if (error instanceof z.ZodError) lastError = `invalid lesson fields: ${describeIssues(error)}`;
       else throw error;
+      console.warn(JSON.stringify({ event: 'lesson_invalid', attempt: attempt + 1, reason: lastError.slice(0, 600) }));
     }
   }
   throw new AiOperationError('INVALID_OUTPUT', `Lesson remained invalid after one repair: ${lastError}`);

@@ -27,7 +27,7 @@ type ChatOptions = {
   maxTokens: number;
   timeoutMs: number;
   model?: string;
-  /** JSON Schema for structured output (response_format json_schema). */
+  /** Reply shape: sent as JSON mode with this JSON Schema in the prompt; callers validate the result with zod. */
   schema?: { name: string; schema: JsonSchema };
   /**
    * Search the web (source discovery only). apiyi's chat completions ignore search tools, so this
@@ -40,13 +40,23 @@ export async function chat(options: ChatOptions): Promise<ChatResult> {
   const apiKey = (process.env.API_KEY || process.env.OPENROUTER_API_KEY)?.trim();
   if (!apiKey) throw new AiOperationError('CONFIGURATION', 'OpenRouter is not configured.');
   if (options.webSearch) return searchWithGemini(options, apiKey);
+  const model = options.model ?? openRouterModel();
+  // JSON mode with the shape in the prompt (the club pattern): json_schema was not enforced by every model, and zod
+  // stays the authority either way.
+  const prompt = options.schema
+    ? `${options.prompt}
+
+Reply with ONE JSON object and nothing else. It must match this JSON Schema (every required field present, arrays within their limits):
+${JSON.stringify(options.schema.schema)}`
+    : options.prompt;
   const body: Record<string, unknown> = {
-    model: options.model ?? openRouterModel(),
-    messages: [{ role: 'user', content: options.prompt }],
+    model,
+    messages: [{ role: 'user', content: prompt }],
     max_tokens: options.maxTokens,
   };
-  if (options.schema) body.response_format = { type: 'json_schema',
-    json_schema: { name: options.schema.name, strict: false, schema: options.schema.schema } };
+  if (options.schema) body.response_format = { type: 'json_object' };
+  // Every call here runs under a timeout, so DeepSeek answers without its thinking pass (the flag is DeepSeek-only).
+  if (model.includes('deepseek')) body.reasoning_effort = 'none';
   const response = await fetch(`${baseUrl()}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json',

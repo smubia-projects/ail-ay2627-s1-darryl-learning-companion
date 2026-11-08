@@ -45,8 +45,10 @@ describe('Stage 6 generated lessons', () => {
       citationChunkIds: ['00000000-0000-4000-8000-000000000599'] }, ...generated.questions.slice(1)] }, input)).toThrow();
     expect(() => validateGenerated({ ...generated, questions: [{ ...generated.questions[0],
       correctOptionId: 'absent' }, ...generated.questions.slice(1)] }, input)).toThrow();
-    expect(() => validateGenerated({ ...generated, steps: [{ ...generated.steps[0],
-      highlightNodeIds: ['absent'] }, ...generated.steps.slice(1)] }, input)).toThrow();
+    // A highlight that names a part the diagram doesn't have is dropped (the step then highlights the first node).
+    const clamped = validateGenerated({ ...generated, steps: [{ ...generated.steps[0]!,
+      highlightNodeIds: ['absent'] }, ...generated.steps.slice(1)] }, input);
+    expect(clamped.lesson.steps[0]?.highlightNodeIds).not.toContain('absent');
     expect(() => validateGenerated({ ...generated, steps: [{ ...generated.steps[0],
       caption: 'Servers securely store webpages.' }, ...generated.steps.slice(1)] }, input)).toThrow();
     expect(() => validateGenerated({ ...generated, steps: [{ ...generated.steps[0],

@@ -16,7 +16,7 @@ export const fetchHome = async () => homeEnvelopeSchema.parse({ data: await auth
 export const fetchTopics = () => authorized<SavedTopicNode[]>('/topics');
 export const suggestTopics = (parentKey: string, requestId: string, prompt?: string) => authorized<SavedTopicNode[]>('/topics/suggestions', {
   method: 'POST', body: JSON.stringify({ parentKey, requestId, ...(prompt ? { prompt } : {}) }),
-}, 65_000);
+}, 310_000); // the server allows each suggestion call 3 minutes
 export const discoverTopicSources = (nodeId: string) => authorized<{ urls: string[]; ready: boolean }>(`/topics/${nodeId}/discover`, {
   method: 'POST',
 }, 310_000);

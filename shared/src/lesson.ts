@@ -43,9 +43,9 @@ export const diagramSchema = z.discriminatedUnion('type', [
 export const lessonStepSchema = z.strictObject({
   id: contentIdSchema, heading: shortTextSchema,
   caption: proseSchema.refine(text => text.split(/\s+/u).length <= 100, 'Captions must contain at most 100 words.'),
-  explanation: proseSchema.min(80).max(2400),
-  workedExample: proseSchema.min(60).max(1200),
-  commonMistake: proseSchema.min(40).max(800),
+  explanation: proseSchema.min(40).max(2400),
+  workedExample: proseSchema.min(30).max(1200),
+  commonMistake: proseSchema.min(20).max(800),
   diagramId: contentIdSchema,
   highlightNodeIds: z.array(contentIdSchema).max(8).refine(uniqueIds),
   highlightEdgeIds: z.array(contentIdSchema).max(24).refine(uniqueIds),
@@ -54,7 +54,7 @@ export const lessonStepSchema = z.strictObject({
 });
 export const lessonSchema = z.strictObject({
   id: entityIdSchema, conceptId: entityIdSchema, title: shortTextSchema,
-  runningExample: proseSchema.min(30).max(300),
+  runningExample: proseSchema.min(10).max(300),
   sourceMode: sourceModeSchema, contentVersion: shortTextSchema,
   objectives: z.array(z.strictObject({ id: contentIdSchema, description: shortTextSchema })).min(1).max(12),
   citationChunkIds: z.array(entityIdSchema).max(6).refine(uniqueIds),
