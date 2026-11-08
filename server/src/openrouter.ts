@@ -2,7 +2,10 @@ import { AiOperationError } from './ai.js';
 
 // All LLM traffic goes through OpenRouter's OpenAI-compatible chat completions API.
 const baseUrl = () => ((process.env.API_BASE_URL || process.env.OPENROUTER_BASE_URL)?.trim() || 'https://api.apiyi.com/v1').replace(/\/+$/, '');
-export const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
+export const DEFAULT_MODEL = 'deepseek-v4-1-flash-260910';
+// Source discovery calls the Gemini-native generateContent endpoint with google_search grounding, which only Gemini
+// models serve, so it never falls back to MODEL_NAME.
+export const DEFAULT_SEARCH_MODEL = 'gemini-3.5-flash-lite';
 
 export type JsonSchema = Record<string, unknown>;
 export type ChatResult = { text: string; finishReason?: string | undefined;
@@ -10,8 +13,9 @@ export type ChatResult = { text: string; finishReason?: string | undefined;
   citations: { url: string; title?: string | undefined }[] };
 
 export function openRouterModel(name: 'OPENROUTER_MODEL' | 'OPENROUTER_SEARCH_MODEL' = 'OPENROUTER_MODEL'): string {
-  const purpose = name === 'OPENROUTER_SEARCH_MODEL' ? (process.env.SEARCH_MODEL_NAME || process.env.OPENROUTER_SEARCH_MODEL)?.trim() : undefined;
-  return purpose || (process.env.MODEL_NAME || process.env.OPENROUTER_MODEL)?.trim() || DEFAULT_MODEL;
+  if (name === 'OPENROUTER_SEARCH_MODEL')
+    return (process.env.SEARCH_MODEL_NAME || process.env.OPENROUTER_SEARCH_MODEL)?.trim() || DEFAULT_SEARCH_MODEL;
+  return (process.env.MODEL_NAME || process.env.OPENROUTER_MODEL)?.trim() || DEFAULT_MODEL;
 }
 
 export function openRouterConfigured() {
